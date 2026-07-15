@@ -506,6 +506,57 @@ message GetCRSFDeviceLinkStatusRes {
   CRSFDeviceLinkStatusData link_status = 1;
 }
 
+// --- W17 owned-fork addition (NOT upstream): read-only head-intent diagnostics ---
+// This is an internal mapper->Electron diagnostics API only. It does NOT modify the
+// canonical iPhone UDP/JSON bridge contract, and it carries NO control path: the
+// mapper is the sole producer, Electron is a subscriber that only renders the
+// mapper's authoritative state. See pkg/headintent/doc.go for the safety boundary.
+
+// HeadIntentState mirrors the LOG-ONLY receiver states. There is deliberately NO
+// "active" (control) state; ACTIVE_LOG_ONLY means fresh+enabled+centered but STILL
+// produces no output.
+enum HeadIntentState {
+  HEAD_INTENT_STATE_UNSPECIFIED = 0; // never sent; guards against a defaulted field
+  HEAD_INTENT_STATE_DISABLED = 1;    // receiver not running
+  HEAD_INTENT_STATE_FAULT = 2;       // socket/config error
+  HEAD_INTENT_STATE_IDLE = 3;        // running, no valid packet yet
+  HEAD_INTENT_STATE_INVALID = 4;     // only invalid packets seen
+  HEAD_INTENT_STATE_STALE = 5;       // had valid, silent > stale_ms
+  HEAD_INTENT_STATE_INACTIVE = 6;    // fresh valid, tracking disabled
+  HEAD_INTENT_STATE_NOT_CENTERED = 7;// fresh valid, enabled, not centered
+  HEAD_INTENT_STATE_ACTIVE_LOG_ONLY = 8; // fresh valid, enabled, centered (still no output)
+}
+
+// HeadIntentDiagnostics is the mapper's authoritative, read-only snapshot. Freshness
+// (receive_age_ms) is computed by the mapper from local monotonic receive time; the
+// iPhone timestamp is never the freshness authority. The last valid sample is
+// preserved (has_last_valid + the yaw/pitch/roll/tracking/centered/seq fields) even
+// when the current state is invalid, stale, or fault.
+message HeadIntentDiagnostics {
+  HeadIntentState state = 1;
+  uint64 total_count = 2;
+  uint64 valid_count = 3;
+  uint64 invalid_count = 4;
+  bool has_last_valid = 5;
+  int64 last_valid_seq = 6;
+  uint64 seq_gaps = 7;
+  uint64 seq_repeats = 8;
+  uint64 seq_regressions = 9;
+  int64 receive_age_ms = 10;         // server-computed; meaningful only if has_last_valid
+  int32 rate_per_sec = 11;
+  double yaw_deg = 12;               // from the last valid packet
+  double pitch_deg = 13;
+  double roll_deg = 14;
+  bool tracking_enabled = 15;
+  bool centered = 16;
+  bool has_centered = 17;            // distinguishes "centered absent" from "false"
+  int32 sender_timeout_ms = 18;      // sender hint only; not the freshness authority
+  bool has_sender_timeout = 19;
+  int64 sender_clock_delta_ms = 20;  // diagnostic; meaningful only if has_last_valid
+  int64 stale_ms = 21;               // the receive-time freshness boundary
+  string last_error = 22;            // concise fault / last socket error, or ""
+}
+
 service JoystickControl {
   rpc getGamepads(Empty) returns (GetGamepadsRes) {};
   rpc getTransmitters(Empty) returns (GetTransmitterRes) {};
@@ -537,5 +588,10 @@ service JoystickControl {
   rpc clearCRSFDeviceLinkCriticalFlags(Empty) returns(Empty) {}
 
   rpc getAppInfo(Empty) returns (GetAppInfoRes) {}
+
+  // W17 owned-fork addition: read-only, server-streaming head-intent diagnostics.
+  // Electron is a subscriber only; there is intentionally no request payload and no
+  // client->server head-intent method anywhere in this service.
+  rpc WatchHeadIntentDiagnostics(Empty) returns (stream HeadIntentDiagnostics) {}
 
 }

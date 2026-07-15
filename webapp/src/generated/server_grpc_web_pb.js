@@ -1332,5 +1332,61 @@ proto.JoystickControl.JoystickControlPromiseClient.prototype.getAppInfo =
 };
 
 
+/**
+ * @const
+ * @type {!grpc.web.MethodDescriptor<
+ *   !proto.JoystickControl.Empty,
+ *   !proto.JoystickControl.HeadIntentDiagnostics>}
+ */
+const methodDescriptor_JoystickControl_WatchHeadIntentDiagnostics = new grpc.web.MethodDescriptor(
+  '/JoystickControl.JoystickControl/WatchHeadIntentDiagnostics',
+  grpc.web.MethodType.SERVER_STREAMING,
+  proto.JoystickControl.Empty,
+  proto.JoystickControl.HeadIntentDiagnostics,
+  /**
+   * @param {!proto.JoystickControl.Empty} request
+   * @return {!Uint8Array}
+   */
+  function(request) {
+    return request.serializeBinary();
+  },
+  proto.JoystickControl.HeadIntentDiagnostics.deserializeBinary
+);
+
+
+/**
+ * @param {!proto.JoystickControl.Empty} request The request proto
+ * @param {?Object<string, string>=} metadata User defined
+ *     call metadata
+ * @return {!grpc.web.ClientReadableStream<!proto.JoystickControl.HeadIntentDiagnostics>}
+ *     The XHR Node Readable Stream
+ */
+proto.JoystickControl.JoystickControlClient.prototype.watchHeadIntentDiagnostics =
+    function(request, metadata) {
+  return this.client_.serverStreaming(this.hostname_ +
+      '/JoystickControl.JoystickControl/WatchHeadIntentDiagnostics',
+      request,
+      metadata || {},
+      methodDescriptor_JoystickControl_WatchHeadIntentDiagnostics);
+};
+
+
+/**
+ * @param {!proto.JoystickControl.Empty} request The request proto
+ * @param {?Object<string, string>=} metadata User defined
+ *     call metadata
+ * @return {!grpc.web.ClientReadableStream<!proto.JoystickControl.HeadIntentDiagnostics>}
+ *     The XHR Node Readable Stream
+ */
+proto.JoystickControl.JoystickControlPromiseClient.prototype.watchHeadIntentDiagnostics =
+    function(request, metadata) {
+  return this.client_.serverStreaming(this.hostname_ +
+      '/JoystickControl.JoystickControl/WatchHeadIntentDiagnostics',
+      request,
+      metadata || {},
+      methodDescriptor_JoystickControl_WatchHeadIntentDiagnostics);
+};
+
+
 module.exports = proto.JoystickControl;
 

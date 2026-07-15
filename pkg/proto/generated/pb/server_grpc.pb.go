@@ -44,6 +44,7 @@ const (
 	JoystickControl_GetCRSFDeviceLinkStatus_FullMethodName          = "/JoystickControl.JoystickControl/getCRSFDeviceLinkStatus"
 	JoystickControl_ClearCRSFDeviceLinkCriticalFlags_FullMethodName = "/JoystickControl.JoystickControl/clearCRSFDeviceLinkCriticalFlags"
 	JoystickControl_GetAppInfo_FullMethodName                       = "/JoystickControl.JoystickControl/getAppInfo"
+	JoystickControl_WatchHeadIntentDiagnostics_FullMethodName       = "/JoystickControl.JoystickControl/WatchHeadIntentDiagnostics"
 )
 
 // JoystickControlClient is the client API for JoystickControl service.
@@ -71,6 +72,10 @@ type JoystickControlClient interface {
 	GetCRSFDeviceLinkStatus(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*GetCRSFDeviceLinkStatusRes, error)
 	ClearCRSFDeviceLinkCriticalFlags(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*Empty, error)
 	GetAppInfo(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*GetAppInfoRes, error)
+	// W17 owned-fork addition: read-only, server-streaming head-intent diagnostics.
+	// Electron is a subscriber only; there is intentionally no request payload and no
+	// client->server head-intent method anywhere in this service.
+	WatchHeadIntentDiagnostics(ctx context.Context, in *Empty, opts ...grpc.CallOption) (JoystickControl_WatchHeadIntentDiagnosticsClient, error)
 }
 
 type joystickControlClient struct {
@@ -385,6 +390,38 @@ func (c *joystickControlClient) GetAppInfo(ctx context.Context, in *Empty, opts 
 	return out, nil
 }
 
+func (c *joystickControlClient) WatchHeadIntentDiagnostics(ctx context.Context, in *Empty, opts ...grpc.CallOption) (JoystickControl_WatchHeadIntentDiagnosticsClient, error) {
+	stream, err := c.cc.NewStream(ctx, &JoystickControl_ServiceDesc.Streams[5], JoystickControl_WatchHeadIntentDiagnostics_FullMethodName, opts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &joystickControlWatchHeadIntentDiagnosticsClient{stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+type JoystickControl_WatchHeadIntentDiagnosticsClient interface {
+	Recv() (*HeadIntentDiagnostics, error)
+	grpc.ClientStream
+}
+
+type joystickControlWatchHeadIntentDiagnosticsClient struct {
+	grpc.ClientStream
+}
+
+func (x *joystickControlWatchHeadIntentDiagnosticsClient) Recv() (*HeadIntentDiagnostics, error) {
+	m := new(HeadIntentDiagnostics)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
 // JoystickControlServer is the server API for JoystickControl service.
 // All implementations must embed UnimplementedJoystickControlServer
 // for forward compatibility
@@ -410,6 +447,10 @@ type JoystickControlServer interface {
 	GetCRSFDeviceLinkStatus(context.Context, *Empty) (*GetCRSFDeviceLinkStatusRes, error)
 	ClearCRSFDeviceLinkCriticalFlags(context.Context, *Empty) (*Empty, error)
 	GetAppInfo(context.Context, *Empty) (*GetAppInfoRes, error)
+	// W17 owned-fork addition: read-only, server-streaming head-intent diagnostics.
+	// Electron is a subscriber only; there is intentionally no request payload and no
+	// client->server head-intent method anywhere in this service.
+	WatchHeadIntentDiagnostics(*Empty, JoystickControl_WatchHeadIntentDiagnosticsServer) error
 	mustEmbedUnimplementedJoystickControlServer()
 }
 
@@ -479,6 +520,9 @@ func (UnimplementedJoystickControlServer) ClearCRSFDeviceLinkCriticalFlags(conte
 }
 func (UnimplementedJoystickControlServer) GetAppInfo(context.Context, *Empty) (*GetAppInfoRes, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetAppInfo not implemented")
+}
+func (UnimplementedJoystickControlServer) WatchHeadIntentDiagnostics(*Empty, JoystickControl_WatchHeadIntentDiagnosticsServer) error {
+	return status.Errorf(codes.Unimplemented, "method WatchHeadIntentDiagnostics not implemented")
 }
 func (UnimplementedJoystickControlServer) mustEmbedUnimplementedJoystickControlServer() {}
 
@@ -886,6 +930,27 @@ func _JoystickControl_GetAppInfo_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _JoystickControl_WatchHeadIntentDiagnostics_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(Empty)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(JoystickControlServer).WatchHeadIntentDiagnostics(m, &joystickControlWatchHeadIntentDiagnosticsServer{stream})
+}
+
+type JoystickControl_WatchHeadIntentDiagnosticsServer interface {
+	Send(*HeadIntentDiagnostics) error
+	grpc.ServerStream
+}
+
+type joystickControlWatchHeadIntentDiagnosticsServer struct {
+	grpc.ServerStream
+}
+
+func (x *joystickControlWatchHeadIntentDiagnosticsServer) Send(m *HeadIntentDiagnostics) error {
+	return x.ServerStream.SendMsg(m)
+}
+
 // JoystickControl_ServiceDesc is the grpc.ServiceDesc for JoystickControl service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -982,6 +1047,11 @@ var JoystickControl_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "getGamepadStream",
 			Handler:       _JoystickControl_GetGamepadStream_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "WatchHeadIntentDiagnostics",
+			Handler:       _JoystickControl_WatchHeadIntentDiagnostics_Handler,
 			ServerStreams: true,
 		},
 	},

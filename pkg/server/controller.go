@@ -9,6 +9,7 @@ import (
 	"fmt"
 	cc "github.com/kaack/elrs-joystick-control/pkg/config"
 	dc "github.com/kaack/elrs-joystick-control/pkg/devices"
+	"github.com/kaack/elrs-joystick-control/pkg/headintent"
 	hc "github.com/kaack/elrs-joystick-control/pkg/http"
 	lc "github.com/kaack/elrs-joystick-control/pkg/link"
 	"github.com/kaack/elrs-joystick-control/pkg/proto/generated/pb"
@@ -26,11 +27,16 @@ type Controller struct {
 	configCtl  *cc.Controller
 	linkCtl    *lc.Controller
 	httpCtl    *hc.Controller
+	headIntent *headintent.Broadcaster
 
 	gRPCTomb *tomb.Tomb
 }
 
-func NewCtl(gRPCPort int, gRPCServer *grpc.Server, devicesCtl *dc.Controller, serialCtl *sc.Controller, configCtl *cc.Controller, linkCtl *lc.Controller, httpCtl *hc.Controller) *Controller {
+// NewCtl builds the gRPC controller. headIntent is the read-only, LOG-ONLY
+// head-intent diagnostics source; pass nil when head-intent ingest is disabled
+// (the WatchHeadIntentDiagnostics RPC then reports Unavailable). It is a
+// diagnostics consumer only and carries no control path.
+func NewCtl(gRPCPort int, gRPCServer *grpc.Server, devicesCtl *dc.Controller, serialCtl *sc.Controller, configCtl *cc.Controller, linkCtl *lc.Controller, httpCtl *hc.Controller, headIntent *headintent.Broadcaster) *Controller {
 	serverCtl := &Controller{
 		gRPCPort:   gRPCPort,
 		gRPCServer: gRPCServer,
@@ -39,6 +45,7 @@ func NewCtl(gRPCPort int, gRPCServer *grpc.Server, devicesCtl *dc.Controller, se
 		configCtl:  configCtl,
 		linkCtl:    linkCtl,
 		httpCtl:    httpCtl,
+		headIntent: headIntent,
 	}
 
 	if err := serverCtl.Init(); err != nil {
@@ -68,6 +75,7 @@ func (c *Controller) Start() (err error) {
 			ConfigCtl:  c.configCtl,
 			LinkCtl:    c.linkCtl,
 			HTTPCtl:    c.httpCtl,
+			HeadIntent: c.headIntent,
 		})
 
 		lis, err := net.Listen("tcp", fmt.Sprintf(":%d", c.gRPCPort))

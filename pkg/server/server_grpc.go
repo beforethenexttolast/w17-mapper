@@ -12,6 +12,7 @@ import (
 	"github.com/golang/protobuf/jsonpb"
 	cc "github.com/kaack/elrs-joystick-control/pkg/config"
 	dc "github.com/kaack/elrs-joystick-control/pkg/devices"
+	"github.com/kaack/elrs-joystick-control/pkg/headintent"
 	"github.com/kaack/elrs-joystick-control/pkg/http"
 	lc "github.com/kaack/elrs-joystick-control/pkg/link"
 	"github.com/kaack/elrs-joystick-control/pkg/proto/generated/pb"
@@ -30,6 +31,11 @@ type GRPCServer struct {
 	ConfigCtl  *cc.Controller
 	LinkCtl    *lc.Controller
 	HTTPCtl    *http.Controller
+	// HeadIntent is the read-only, LOG-ONLY head-intent diagnostics source. It is
+	// nil unless the mapper was started with -headtrack-ingest; when nil the
+	// WatchHeadIntentDiagnostics RPC reports Unavailable. It is a diagnostics
+	// consumer only and has no control path (see pkg/headintent/doc.go).
+	HeadIntent *headintent.Broadcaster
 }
 
 func (s *GRPCServer) GetGamepads(context.Context, *pb.Empty) (*pb.GetGamepadsRes, error) {
