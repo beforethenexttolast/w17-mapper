@@ -15,7 +15,7 @@ require (
 	github.com/sigurn/crc8 v0.0.0-20220107193325-2243fe600f9f
 	github.com/ttys3/echo-pprof/v4 v4.0.1
 	github.com/veandco/go-sdl2 v0.4.34
-	go.bug.st/serial v1.5.0
+	go.bug.st/serial v1.6.0
 	golang.org/x/exp v0.0.0-20230522175609-2e198f4a06a1
 	google.golang.org/grpc v1.55.0
 	google.golang.org/protobuf v1.30.0
