@@ -57,6 +57,38 @@ What that means for this code:
 - No shaping or arbitration code exists here. None may be published before the
   FIRST_ACTIVE review checklist (R1–R14) passes.
 
-A local `pre-push` hook guards points 1 and 3 above. **It is a speed bump, not a
-control:** `--no-verify` bypasses it, and hooks are not cloned, so a fresh clone
-has no guard. The real gate is the review checklist and owner approval.
+### Push-review rule (the actual control)
+
+**No push to a public remote may add head-intent shaping, arbitration, or any
+output path until the FIRST_ACTIVE review checklist R1–R14 passes and the owner
+records approval.** That rule is the control; the hook below only catches
+accidents.
+
+Before any push touching `pkg/headintent`, `pkg/proto` or `pkg/server`, confirm
+all four still hold:
+
+1. `pkg/proto/server.proto` ends at `HEAD_INTENT_STATE_ACTIVE_LOG_ONLY = 8`.
+2. No `FIRST_ACTIVE` identifier or `w17_first_active` build tag in source.
+3. `go test ./pkg/headintent/` green, including the `crsf.PackChannels`
+   byte-identity proof (flag-off vs flag-on).
+4. `go list -deps ./pkg/headintent/` still reaches no control/output package
+   (no config / link / crossfire / serial / devices edge).
+
+### Hook (accident guard)
+
+`.githooks/pre-push` is **tracked in this repository**, so it survives a clone.
+Git does not enable repository-supplied hooks automatically — enable it once per
+clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+It refuses a push whose tip tree contains a `w17_first_active` build tag, a
+`FIRST_ACTIVE` identifier in Go/proto source, or an active head-intent enum
+value. Prose that merely documents the boundary (this file) does not trip it.
+
+**Honest limits:** `--no-verify` bypasses it; it scans the pushed tip tree, not
+every commit in the range; and it does nothing in a clone where
+`core.hooksPath` was never set. It is a speed bump against accident. The
+push-review rule above, the R1–R14 checklist, and owner approval are the gate.

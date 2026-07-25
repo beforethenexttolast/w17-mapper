@@ -1,0 +1,68 @@
+#!/bin/sh
+# W17 pre-push guard — refuse to publish gated head-tracking control code.
+#
+# WHY THIS EXISTS
+# Until 2026-07-25 this fork had no push remote at all, and that absence was
+# quietly acting as a safety control: gated FIRST_ACTIVE work could not be
+# distributed even by accident. `origin` now exists and is PUBLIC, so that
+# accidental protection is gone. This hook is its deliberate replacement.
+#
+# ENABLE IT (once per clone — git does not auto-enable repo-supplied hooks):
+#   git config core.hooksPath .githooks
+#
+# WHAT IT BLOCKS
+#   1. A `w17_first_active` build tag in code/build files.
+#   2. A `FIRST_ACTIVE` identifier in Go or proto source.
+#   3. An active head-intent enum value — the proto must still end at
+#      HEAD_INTENT_STATE_ACTIVE_LOG_ONLY = 8.
+# Per head_tracking_unlock_plan.md §2.3.11/§2.3.12: FIRST_ACTIVE is NO-GO/BLOCKED
+# (R1/R2/R6-R9/R12/R13 are hardware/evidence class). No arbiter or shaping code
+# may be published before the §2.3.11.6 review passes.
+#
+# HONEST LIMITS — read these before trusting it
+#   * `git push --no-verify` bypasses this hook entirely.
+#   * It does nothing in a clone where core.hooksPath was never set.
+#   * It scans the pushed tip tree, not every commit in the range.
+# It is a speed bump against accident, NOT a control against intent. The real
+# gate is the push-review rule in FORK-NOTICE.md, the FIRST_ACTIVE review
+# checklist R1-R14, and owner approval.
+
+set -e
+
+forbid() {
+	printf '\n\033[31mPUSH REFUSED\033[0m — %s\n' "$1" >&2
+	printf '   ref: %s\n' "$2" >&2
+	printf '\nFIRST_ACTIVE is NO-GO/BLOCKED. Publishing gated head-tracking\n' >&2
+	printf 'control code needs the §2.3.11.6 review to pass first.\n' >&2
+	printf '\nIf this is a reviewed, approved push, bypass deliberately:\n' >&2
+	printf '   git push --no-verify\n\n' >&2
+	exit 1
+}
+
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+	# Skip branch deletions (all-zero local sha).
+	case "$local_sha" in
+	*[!0]*) ;;
+	*) continue ;;
+	esac
+
+	# Scan CODE ONLY. Prose that merely *documents* the boundary (FORK-NOTICE.md,
+	# the unlock plan) must not trip this — a guard that cries wolf teaches
+	# --no-verify, which defeats it. Case-sensitive: the build tag is lowercase.
+	if git grep -I -l -e 'w17_first_active' "$local_sha" -- \
+		'*.go' '*.sh' '*.yml' '*.yaml' '*.mk' 'Makefile' 'Dockerfile*' >/dev/null 2>&1; then
+		forbid "a w17_first_active build tag is present in code/build files" "$local_sha"
+	fi
+
+	# -w (word match), not \b — git's ERE engine does not support \b.
+	if git grep -I -l -w -e 'FIRST_ACTIVE' "$local_sha" -- '*.go' '*.proto' >/dev/null 2>&1; then
+		forbid "a FIRST_ACTIVE identifier is present in Go or proto source" "$local_sha"
+	fi
+
+	# An ACTIVE enum value that is not ACTIVE_LOG_ONLY means an output state exists.
+	if git grep -I -l -E 'HEAD_INTENT_STATE_ACTIVE([^_]|$)' "$local_sha" -- '*.proto' >/dev/null 2>&1; then
+		forbid "the proto declares an active head-intent enum value (must end at ACTIVE_LOG_ONLY = 8)" "$local_sha"
+	fi
+done
+
+exit 0
