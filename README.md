@@ -1,3 +1,10 @@
+> **This is a modified fork, not the upstream project.** Forked from
+> [kaack/elrs-joystick-control](https://github.com/kaack/elrs-joystick-control) at commit `2b8031a`
+> for the W17 RC project. It adds **log-only** head-intent ingest (UDP 5602) and a read-only
+> diagnostics stream; it reaches no control output. This fork elects **GPL-3.0-or-later** from
+> upstream's dual licence. See **[FORK-NOTICE.md](./FORK-NOTICE.md)** for provenance, the full
+> change list, and the safety boundary that applies before pushing.
+
 <!--suppress HtmlDeprecatedAttribute -->
 <div align="center">
   <h1>ELRS Joystick Control</h1>
