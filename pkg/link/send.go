@@ -41,6 +41,53 @@ func (c *Controller) StopSendLoop() error {
 	return nil
 }
 
+// resolveChannels returns the channel array to transmit for a port, or nil when
+// the mapper has no config for it. W17 fork addition.
+//
+// A nil result means "send no channel frame at all", which is a deliberate
+// safety choice, not an oversight. Upstream transmitted Controller.EvalNoData
+// (all zeros) in this case, at the full CRSF refresh rate, in well-formed
+// CRC-valid frames. That is the same class of defect as the hold-last bug fixed
+// in the config layer: the receiver sees a perfectly healthy link carrying a
+// payload the mapper has no basis for, so no link-loss failsafe can ever fire.
+//
+// There is no safe payload to invent here. Unlike the stale-input path, "no
+// config" means the channel ROLES are unknown, so no per-channel neutral can be
+// derived:
+//
+//   - All zeros is below the nominal 172..1811 CRSF range. A receiver that
+//     normalizes against those anchors reads it as FULL NEGATIVE deflection on
+//     every channel.
+//   - All 992 (center) is worse for switches, not better. A receiver applying
+//     hysteresis around center HOLDS the previous switch state, so clearing a
+//     config mid-session would leave an arm switch LATCHED ON. This is why the
+//     unused EvalCenter constant was removed rather than adopted.
+//
+// Sending nothing instead routes the condition into the receiver's own
+// link-loss failsafe -- the designed, tested mechanism for "no valid control
+// input" -- rather than depending on how a particular receiver happens to
+// interpret an out-of-band payload.
+//
+// Note the consequence for port liveness: while suppressed, no channel write
+// happens, so a serial disconnect is not detected by the channel write error.
+// The periodic model-id write from the recv loop covers this (it tears the loop
+// down on error for exactly this reason), and in any case nothing is being
+// commanded during this window.
+func resolveChannels(channelsDataMap *map[string]*[16]util.CRSFValue, portName string) *[16]util.CRSFValue {
+	if channelsDataMap == nil {
+		return nil
+	}
+
+	// A cleared config leaves this map non-nil but EMPTY, so the miss below is
+	// the reachable case, not just the nil one.
+	values, ok := (*channelsDataMap)[portName]
+	if !ok {
+		return nil
+	}
+
+	return values
+}
+
 //goland:noinspection GoUnusedParameter
 func (c *Controller) SendLoop(port *serial.Port, sendChan chan any, recvChan chan any) error {
 
@@ -50,12 +97,15 @@ func (c *Controller) SendLoop(port *serial.Port, sendChan chan any, recvChan cha
 	fmt.Printf("(send-loop) starting, refresh rate %v\n", currentRefreshRate)
 
 	var err error
-	var ok bool
 
 	ticker := time.NewTicker(currentRefreshRate)
 
 	var channelsDataMap *map[string]*[16]util.CRSFValue
 	var channelsData *[16]util.CRSFValue
+
+	// W17 fork addition: tracks whether channel frames are currently suppressed,
+	// so the transitions are logged once each instead of at the refresh rate.
+	suppressed := false
 
 	c.sentPacketsCount = 0
 
@@ -74,7 +124,14 @@ Loop:
 					if _, err = port.Write(crsf.CreateModelIDFrame(0)); err != nil {
 						c.errorPacketsCount += 1
 						fmt.Printf("(send-loop) could not write model id frame on port %s. %s\n", port.Name, err.Error())
-						break
+						// W17 fork modification: tear the loop down so the
+						// supervisor reconnects, as the channels write already
+						// does. Upstream only counted the error, which was
+						// harmless while channel writes ran every tick and
+						// caught a dead port first. With channel frames
+						// suppressed under no-config, this periodic write is
+						// the only thing left that can notice the port died.
+						break Loop
 					}
 					continue
 				} else if data == PingDevices {
@@ -120,18 +177,26 @@ Loop:
 				channelsDataMap = c.configCtl.EvalDataMap
 			}
 
-			if channelsDataMap == nil {
-				channelsData = c.configCtl.EvalNoData
-			} else if channelsData, ok = (*channelsDataMap)[port.Name]; !ok {
-				channelsData = c.configCtl.EvalNoData
+			channelsData = resolveChannels(channelsDataMap, port.Name)
+
+			// W17 fork modification -- failsafe gap. When no config resolves for
+			// this port, send NO channel frame at all rather than a synthesized
+			// one. See resolveChannels for why any invented payload is unsafe.
+			if channelsData == nil {
+				if !suppressed {
+					suppressed = true
+					fmt.Printf("(send-loop) no config for port %s: suppressing channel frames "+
+						"so the receiver's link-loss failsafe can fire\n", port.Name)
+				}
+				continue
 			}
 
-			if channelsData != c.configCtl.EvalNoData {
-				//PrintChannels(channelsData)
+			if suppressed {
+				suppressed = false
+				fmt.Printf("(send-loop) config resolved for port %s: resuming channel frames\n", port.Name)
 			}
 
 			if _, err = port.Write(crsf.PackChannels(channelsData)); err != nil {
-				//if _, err = port.Write(crsf.PackChannels(c.configCtl.EvalCenter)); err != nil {
 				fmt.Printf("(send-loop) could not write channels on port %s. %s\n", port.Name, err.Error())
 				break Loop
 			}

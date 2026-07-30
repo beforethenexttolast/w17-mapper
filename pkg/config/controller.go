@@ -19,8 +19,20 @@ type Controller struct {
 
 	deviceCtl   *dc.Controller
 	EvalDataMap *map[string]*[16]util.CRSFValue `json:"-"`
-	EvalNoData  *[16]util.CRSFValue
-	EvalCenter  *[16]util.CRSFValue
+
+	// EvalNoData is the placeholder reported for a port with no config.
+	//
+	// W17 fork modification: this is a DISPLAY value only -- it feeds
+	// GetTransmitterChannels, which backs the UI's channel readout. It must
+	// never be transmitted. The send loop deliberately writes no channel frame
+	// at all when no config resolves, so that the receiver's link-loss failsafe
+	// can fire; see link.resolveChannels for the full reasoning.
+	//
+	// The former EvalCenter (all 992) was removed rather than adopted as the
+	// transmitted value: center sits inside a receiver's switch hysteresis
+	// band, so it HOLDS the previous switch state and would leave an arm switch
+	// latched ON when a config is cleared mid-session.
+	EvalNoData *[16]util.CRSFValue
 
 	//channelsTomb      *tomb.Tomb
 	//ChannelEventCount int32
@@ -40,7 +52,6 @@ func NewCtl(dc *dc.Controller) *Controller {
 	configCtl := &Controller{
 		deviceCtl:  dc,
 		EvalNoData: &[16]util.CRSFValue{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-		EvalCenter: &[16]util.CRSFValue{992, 992, 992, 992, 992, 992, 992, 992, 992, 992, 992, 992, 992, 992, 992, 992},
 	}
 	err := configCtl.Init()
 

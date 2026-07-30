@@ -48,7 +48,6 @@ func newTestConfig(detachedIds ...string) *Config {
 	cfg.Ctl = &Controller{
 		deviceCtl:  &dc.Controller{Gamepads: gamepads},
 		EvalNoData: &[16]util.CRSFValue{},
-		EvalCenter: centeredValues(),
 	}
 	return cfg
 }
