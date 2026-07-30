@@ -17,6 +17,23 @@ type InputGamepad struct {
 	Joy *sdl.Joystick `json:"-"`
 }
 
+// Attached reports whether this gamepad's SDL handle still refers to a present
+// device. W17 fork addition.
+//
+// The registry is built once in Controller.Init and never pruned: the polling
+// loop discards the SDL event body, so a device removal is never reflected in
+// Controller.Gamepads. Without this check a physically unplugged gamepad still
+// resolves by id, and Axis/Button/Hat keep reading the stale, frozen values held
+// by an open-but-detached SDL_Joystick -- which the config layer cannot
+// distinguish from live input. Gating resolution on this turns a removal into a
+// clean "unresolvable device", which the eval path already neutralizes.
+//
+// A nil handle counts as detached: an InputGamepad with no joystick cannot be
+// read from.
+func (d *InputGamepad) Attached() bool {
+	return d.Joy != nil && d.Joy.Attached()
+}
+
 func (d *InputGamepad) Axis(axis int) util.RawValue {
 	return util.RawValue(d.Joy.Axis(axis))
 }

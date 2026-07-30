@@ -387,6 +387,34 @@ definitions:
             $meta:
               autocomplete: raw
             default: -32768
+          failsafe:
+            title: Failsafe CRSF value
+            description: |
+              The CRSF value this channel is driven to when its input cannot be
+              evaluated -- for example when its gamepad is unplugged, is detached,
+              or was never found.
+
+
+              The default `992` is the CRSF stick-center anchor, which is correct
+              for proportional channels such as throttle, steering and a camera
+              gimbal.
+
+
+              **Switch-like channels should not be left at center.** A receiver
+              that applies hysteresis around center will *hold the previous switch
+              state* at `992`, so an arm or DRS channel left at the default stays
+              latched in whatever state it held when the input died. Set those
+              channels to their OFF rail instead -- typically `172`.
+
+
+              Do not set this to `0`. Although `0` is a legal 11-bit value, it sits
+              below the nominal `[172, 1811]` CRSF range and a receiver that
+              normalizes against those anchors reads it as **full negative
+              deflection**, not as center.
+            type: integer
+            $meta:
+              autocomplete: crsf
+            default: 992
           input:
             title: Input
             $meta:

@@ -38,3 +38,12 @@ const DefaultFalsyRawValue = ZeroRaw
 
 const CRSFMinValue = 0
 const CRSFMaxValue = 1984
+
+// CRSFCenterValue is the CRSF stick-center anchor (1500us). It is the neutral a
+// channel is driven to when its input cannot be evaluated -- see
+// InputChannel.FailsafeValue.
+//
+// W17 fork addition. Do not use CRSFMinValue (0) as a neutral: 0 is below the
+// nominal 172..1811 CRSF raw range, and a receiver that normalizes against
+// those anchors reads it as FULL NEGATIVE deflection, not as center.
+const CRSFCenterValue = 992

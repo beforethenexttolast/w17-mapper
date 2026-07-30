@@ -16,6 +16,17 @@ type ChannelT struct {
 	CRSFMin *util.RawValue `json:"crsf_min"`
 	RawMax  *util.RawValue `json:"raw_max"`
 	RawMin  *util.RawValue `json:"raw_min"`
+
+	// Failsafe is the CRSF value this channel is driven to when its input
+	// subtree cannot be evaluated (device unresolvable or detached, missing
+	// input node). W17 fork addition; defaults to util.CRSFCenterValue.
+	//
+	// Center is right for proportional channels (throttle, steering, gimbal).
+	// Switch-like channels should set this to their OFF rail instead: a
+	// receiver that applies hysteresis around center will HOLD the previous
+	// switch state at center, so an arm or DRS channel left at center stays
+	// latched in whatever state it was in when the input died.
+	Failsafe *util.RawValue `json:"failsafe"`
 }
 
 // InputChannel *** Channel ***
@@ -61,7 +72,25 @@ func (c *ChannelT) UnmarshalJSON(data []byte) error {
 		*(*c).RawMin = util.MinRaw
 	}
 
+	//W17 fork addition: absent failsafe means center, never 0
+	if c.Failsafe == nil {
+		(*c).Failsafe = new(util.RawValue)
+		*(*c).Failsafe = util.CRSFCenterValue
+	}
+
 	return nil
+}
+
+// FailsafeValue reports the CRSF value this channel must be driven to when its
+// input cannot be evaluated. W17 fork addition; satisfies FailsafeValuer.
+//
+// The nil guard matters: a config built in Go rather than unmarshalled from JSON
+// never runs UnmarshalJSON, so the default is applied here too.
+func (i *InputChannel) FailsafeValue() util.CRSFValue {
+	if i.Channel.Failsafe == nil {
+		return util.CRSFValue(util.CRSFCenterValue)
+	}
+	return util.CRSFValue(*i.Channel.Failsafe)
 }
 
 func (i *InputChannel) Eval(c *Config) (src IOType, out util.RawValue, ch util.ChannelNumber, nan bool) {

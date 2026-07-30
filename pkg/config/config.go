@@ -7,7 +7,6 @@ package config
 import (
 	_ "embed"
 	"github.com/kaack/elrs-joystick-control/pkg/devices"
-	"github.com/kaack/elrs-joystick-control/pkg/util"
 )
 
 type Config struct {
@@ -15,18 +14,32 @@ type Config struct {
 	Ctl   *Controller          `json:"-"`
 }
 
+// GetInputGamepad resolves a gamepad by device id.
+//
+// W17 fork modification -- failsafe gap. A detached device no longer resolves.
+// The registry is never pruned on removal, so an id kept resolving after its
+// gamepad was unplugged and the input nodes went on reading stale axis values
+// from a detached SDL handle. Reporting !ok here routes a removal into the same
+// nan path as a missing device, which the eval path drives to a defined neutral.
 func (c *Config) GetInputGamepad(deviceId string) (*devices.InputGamepad, bool) {
 	var ok bool
 
 	var res *devices.InputGamepad
-	res, ok = c.Ctl.deviceCtl.Gamepads[deviceId]
+	if res, ok = c.Ctl.deviceCtl.Gamepads[deviceId]; !ok {
+		return nil, false
+	}
 
-	return res, ok
+	if !res.Attached() {
+		return nil, false
+	}
+
+	return res, true
 }
 
 func NewTransmitter(port string) *OutputTransmitter {
 	return &OutputTransmitter{
-		Values: &[16]util.CRSFValue{},
+		//W17 fork modification: center, not zero -- see centeredValues
+		Values: centeredValues(),
 		Transmitter: TransmitterT{
 			Port:     port,
 			Channels: &[]*IOHolder{},
