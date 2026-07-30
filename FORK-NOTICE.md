@@ -38,6 +38,7 @@ All changes are dated and attributable in git history. Summary:
 |---|---|---|
 | `59d1739` | 2026-07-15 | **LOG-ONLY** head-intent ingest: new self-contained `pkg/headintent` (UDP 5602 receiver, validator, state machine), a read-only `WatchHeadIntentDiagnostics` gRPC stream, and a pinned/drift-checked proto-codegen script (`pkg/proto/generate.sh`) |
 | `f0a18f3` | 2026-07-25 | `go.bug.st/serial` v1.5.0 → v1.6.0, to clear a go1.26 cgo build failure in third-party `enumerator` |
+| `2dc7c5a` | 2026-07-30 | **Failsafe fix** in the pre-existing stick path: a channel whose input evaluates to `nan` is driven to a defined neutral instead of silently holding the previous tick's value. Adds a per-channel `failsafe` config field (`ChannelT.Failsafe`, schema + default `util.CRSFCenterValue` = 992), `devices.InputGamepad.Attached()` so a detached gamepad stops resolving, and centered rather than zeroed initial transmitter values |
 
 ## Safety boundary — read before pushing
 
