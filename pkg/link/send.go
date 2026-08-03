@@ -12,6 +12,7 @@ import (
 	"github.com/kaack/elrs-joystick-control/pkg/serial"
 	"github.com/kaack/elrs-joystick-control/pkg/util"
 	"gopkg.in/tomb.v2"
+	"sync/atomic"
 	"time"
 )
 
@@ -86,6 +87,58 @@ func resolveChannels(channelsDataMap *map[string]*[16]util.CRSFValue, portName s
 	}
 
 	return values
+}
+
+// portUnresolved reports whether the config layer has told the send loop that it
+// cannot account for this port's channels, and that nothing may therefore be
+// transmitted for it. W17 fork addition.
+//
+// The condition behind it: OutputTransmitter.Eval walks a top-level entry's
+// subtree to find the channel nodes it drives, and that walk is depth-bounded.
+// If the bound truncates the walk, the owner set is incomplete -- some channel
+// may be left holding a stale value with nothing able to neutralize it, because
+// the code no longer knows the channel exists. That is unknown state, and the
+// answer to unknown state on this path is the one resolveChannels and
+// configSwapGate already give: send nothing and let the receiver's own link-loss
+// failsafe resolve it.
+//
+// A nil map (no config applied yet) is not unresolved; that case is already
+// covered by resolveChannels finding no entry for the port.
+func portUnresolved(unresolvedMap *map[string]*atomic.Bool, portName string) bool {
+	if unresolvedMap == nil {
+		return false
+	}
+
+	flag, ok := (*unresolvedMap)[portName]
+	if !ok || flag == nil {
+		return false
+	}
+
+	return flag.Load()
+}
+
+// suppressionReason reports why this tick must transmit no channel frame, or ""
+// when it may transmit. W17 fork addition.
+//
+// Three independent causes now share one outcome, so the composition is worth
+// stating rather than leaving inline: ANY of them suppresses, and none of them
+// can end a suppression another is holding open. That is the property that keeps
+// the swap window a minimum and never a timeout -- a window expiring while the
+// config still does not resolve, or while the config layer still cannot account
+// for its channels, changes nothing. The reason string is for the transition log
+// only; the first listed cause wins when several hold at once, and which one is
+// reported has no effect on behaviour.
+func suppressionReason(channelsData *[16]util.CRSFValue, swapHoldOff bool, unresolved bool) string {
+	switch {
+	case channelsData == nil:
+		return "no config resolves for this port"
+	case swapHoldOff:
+		return "a config was just applied"
+	case unresolved:
+		return "the config layer cannot account for every channel it drives"
+	}
+
+	return ""
 }
 
 // configSwapFailsafeWindow is how long channel frames stay suppressed after the
@@ -261,11 +314,20 @@ Loop:
 			// replacement config re-seeds every channel it does not map to 992,
 			// and 992 is HELD by a receiver's switch hysteresis. See
 			// configSwapGate.
-			if channelsData == nil || gate.holdOff(now) {
+			//
+			// The third cause is a truncated owner walk: the config layer cannot
+			// account for every channel it drives. See portUnresolved.
+			reason := suppressionReason(
+				channelsData,
+				gate.holdOff(now),
+				portUnresolved(c.configCtl.EvalUnresolvedMap, port.Name),
+			)
+
+			if reason != "" {
 				if !suppressed {
 					suppressed = true
-					fmt.Printf("(send-loop) suppressing channel frames on port %s "+
-						"so the receiver's link-loss failsafe can fire\n", port.Name)
+					fmt.Printf("(send-loop) suppressing channel frames on port %s (%s) "+
+						"so the receiver's link-loss failsafe can fire\n", port.Name, reason)
 				}
 				continue
 			}

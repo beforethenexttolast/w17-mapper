@@ -44,7 +44,7 @@ func configWith(channels ...*IOHolder) *Config {
 // including the ones the new config maps perfectly well -- reads center from the
 // moment Apply is pressed until an unrelated device event arrives.
 func TestPublishedArraysAreEvaluated(t *testing.T) {
-	_, published := applyConfig(configWith(numberChannel(1, util.MaxRaw)))
+	_, published, _ := applyConfig(configWith(numberChannel(1, util.MaxRaw)))
 
 	values, ok := published[swapTestPort]
 	if !ok {
@@ -66,7 +66,7 @@ func TestPublishedArraysAreEvaluated(t *testing.T) {
 func TestDroppedChannelReadsCenterAfterASwap(t *testing.T) {
 	// Before the swap: ch5 is an arm channel held hard ON.
 	before := configWith(numberChannel(1, util.MaxRaw), numberChannel(5, util.MaxRaw))
-	_, published := applyConfig(before)
+	_, published, _ := applyConfig(before)
 
 	if got := published[swapTestPort][4]; got != full {
 		t.Fatalf("setup: expected ch5 latched ON at %d, got %d", full, got)
@@ -74,7 +74,7 @@ func TestDroppedChannelReadsCenterAfterASwap(t *testing.T) {
 
 	// The replacement config no longer maps ch5.
 	after := configWith(numberChannel(1, util.MaxRaw))
-	_, published = applyConfig(after)
+	_, published, _ = applyConfig(after)
 
 	values := published[swapTestPort]
 	if values[4] != center {
@@ -109,7 +109,7 @@ func TestSwapKeepsMappedChannelsLive(t *testing.T) {
 		Id: "num-node", Type: "number", Number: NumberT{Output: util.MaxRaw},
 	}}, &rail))
 
-	_, published := applyConfig(after)
+	_, published, _ := applyConfig(after)
 
 	if got := published[swapTestPort][0]; got != full {
 		t.Errorf("expected the still-mapped ch1 to carry its live value %d, got %d", full, got)

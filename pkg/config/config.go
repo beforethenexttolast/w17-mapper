@@ -6,6 +6,8 @@ package config
 
 import (
 	_ "embed"
+	"sync/atomic"
+
 	"github.com/kaack/elrs-joystick-control/pkg/devices"
 )
 
@@ -40,6 +42,9 @@ func NewTransmitter(port string) *OutputTransmitter {
 	return &OutputTransmitter{
 		//W17 fork modification: center, not zero -- see centeredValues
 		Values: centeredValues(),
+		//W17 fork addition: allocated up front so the eval loop can publish the
+		//pointer before the first Eval runs -- see OutputTransmitter.Unresolved
+		Unresolved: &atomic.Bool{},
 		Transmitter: TransmitterT{
 			Port:     port,
 			Channels: &[]*IOHolder{},

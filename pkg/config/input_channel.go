@@ -29,15 +29,57 @@ type ChannelT struct {
 	Failsafe *util.RawValue `json:"failsafe"`
 }
 
+// channelEvalState records what happened to a channel node during ONE top-level
+// entry's evaluation. W17 fork addition.
+//
+// It exists because IsNaN cannot answer the question. IsNaN is written as a side
+// effect of Eval and never cleared, so it is only about the last time this node
+// was evaluated -- which may have been many ticks ago, since `and`, `or`,
+// `switch` and `case` all exit early and skip operands. A tri-state that is
+// explicitly re-armed at the start of every pass distinguishes "evaluated and
+// resolved" from "evaluated and failed" from "not evaluated at all this pass",
+// and the last of those is the case a stale bool silently misreports.
+type channelEvalState uint8
+
+const (
+	// channelNotEvaluated is what armEvalPass sets, and it is deliberately the
+	// zero value: a node that no walk has armed and no Eval has touched reads as
+	// unevaluated rather than as resolved.
+	channelNotEvaluated channelEvalState = iota
+	channelResolved
+	channelFailed
+)
+
 // InputChannel *** Channel ***
 type InputChannel struct {
 	Id    string        `json:"id"`
 	Value util.RawValue `json:"value"`
 	IsNaN bool          `json:"-"`
 
+	// evalPass is the per-pass state described on channelEvalState. Unexported:
+	// it is meaningful only between an arming walk and the evaluation that
+	// follows it, so nothing outside this package should read it, and it must
+	// not survive a marshal round trip.
+	evalPass channelEvalState
+
 	Type    string    `json:"type"`
 	Channel ChannelT  `json:"channel" input:"true"`
 	Holder  *IOHolder `json:"-"`
+}
+
+// armEvalPass resets this node's per-pass state ahead of an evaluation, so that
+// whatever is read afterwards is a fact about that evaluation. Called only by
+// the channelOwners walk. W17 fork addition.
+func (i *InputChannel) armEvalPass() {
+	i.evalPass = channelNotEvaluated
+}
+
+// resolvedThisPass reports whether this node produced a usable number during the
+// evaluation that followed the arming walk. False covers BOTH "evaluated and came
+// back nan" and "never evaluated, because an ancestor exited early" -- neither of
+// which may leave this channel's slot holding a live value. W17 fork addition.
+func (i *InputChannel) resolvedThisPass() bool {
+	return i.evalPass == channelResolved
 }
 
 type FakeChannelT ChannelT
@@ -97,6 +139,13 @@ func (i *InputChannel) Eval(c *Config) (src IOType, out util.RawValue, ch util.C
 	src, out, ch, nan = i._Eval(c)
 	i.Value = out
 	i.IsNaN = nan
+
+	//W17 fork addition: record the outcome for the pass the arming walk opened.
+	if nan {
+		i.evalPass = channelFailed
+	} else {
+		i.evalPass = channelResolved
+	}
 
 	return src, out, ch, nan
 }

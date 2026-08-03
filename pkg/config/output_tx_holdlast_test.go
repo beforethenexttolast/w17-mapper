@@ -73,13 +73,20 @@ func axisChannel(number int32, deviceId string, failsafe *util.RawValue) *IOHold
 	return channelNode(number, axis, failsafe)
 }
 
-// numberChannel wires InputChannel(number) <- InputNumber(raw). It stands in for
-// a healthy tick, so no test needs a real SDL joystick to produce a live value.
-func numberChannel(number int32, raw util.RawValue) *IOHolder {
-	num := &IOHolder{IO: &InputNumber{
+// numberInput is a node that always resolves. It stands in for a healthy input,
+// so no test needs a real SDL joystick to produce a live value -- which matters
+// beyond convenience: devices.InputGamepad.Attached() requires a live
+// *sdl.Joystick, so a test can build a DETACHED device but never an attached one.
+func numberInput(raw util.RawValue) *IOHolder {
+	return &IOHolder{IO: &InputNumber{
 		Id: "num-node", Type: "number", Number: NumberT{Output: raw},
 	}}
-	return channelNode(number, num, nil)
+}
+
+// numberChannel wires InputChannel(number) <- InputNumber(raw), with the default
+// (center) failsafe.
+func numberChannel(number int32, raw util.RawValue) *IOHolder {
+	return channelNode(number, numberInput(raw), nil)
 }
 
 func channelNode(number int32, input *IOHolder, failsafe *util.RawValue) *IOHolder {

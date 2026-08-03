@@ -19,6 +19,11 @@ package config
 //
 //   - 7 always report -1 (axis, button, hat, gamepad, invert, number, seq) and
 //     1 reports its own on every path (channel). Neither can strand a slot.
+//     ⚠ That sentence is about the OLD defect only, and it was left standing
+//     here as if it were a reason to leave the seven untested. It is not: an
+//     always--1 type is unusable to Eval on every tick, so any channel node
+//     under one is driven to its failsafe on every tick, healthy or not. That
+//     behaviour is pinned in output_tx_partial_test.go rather than assumed.
 //   - 14 are ASYMMETRIC -- they propagate the child's number while healthy and
 //     return -1 once the input stops resolving: linear, map, case, if, trim,
 //     switch, and, or, eq, neq, gt, gte, lt, lte. The healthy tick writes the
@@ -305,21 +310,59 @@ func TestReadIndirectionResolvesTheOwnersRail(t *testing.T) {
 	}
 }
 
-// TestReadCycleTerminates guards the one way the node graph can stop being a
-// tree: `read` resolves by id, so it can be pointed at itself. The walk is
-// depth-bounded rather than cycle-detecting; this fails by hanging, not by
-// asserting.
-func TestReadCycleTerminates(t *testing.T) {
-	cfg := newTestConfig()
+// TestChannelOwnersWalkTerminatesOnAReadCycle covers the WALK only, and the name
+// says so deliberately.
+//
+// It replaces a test called TestReadCycleTerminates, which claimed more than it
+// did. That name reads as "a read cycle is survivable"; it is not. The test
+// called channelOwners directly and never Eval, and Eval is what a real config
+// reaches first: InputRead._Eval (input_read.go) follows Config.IOMap with no
+// depth bound of its own, so a cycle exhausts the stack and kills the process
+// before the walk is ever entered. That unguarded recursion is a pre-existing
+// upstream defect (present at 2b8031a), tracked separately and NOT fixed here --
+// so no test in this file may evaluate a cyclic config.
+//
+// What is genuinely tested: the walk terminates on a graph that is not a tree,
+// returns no owners, and reports the truncation so the caller can fail safe.
+func TestChannelOwnersWalkTerminatesOnAReadCycle(t *testing.T) {
+	t.Run("self reference", func(t *testing.T) {
+		cfg := newTestConfig()
 
-	loop := &IOHolder{IO: &InputRead{
-		Id: "read-node", Type: "read", Read: ReadT{Source: "loop"},
-	}}
-	cfg.IOMap["loop"] = loop
+		loop := &IOHolder{IO: &InputRead{
+			Id: "read-node", Type: "read", Read: ReadT{Source: "loop"},
+		}}
+		cfg.IOMap["loop"] = loop
 
-	if got := channelOwners(cfg, loop, 0, nil); len(got) != 0 {
-		t.Errorf("a read cycle owns no channel, got %d", len(got))
-	}
+		owners, truncated := channelOwners(cfg, loop)
+		if len(owners) != 0 {
+			t.Errorf("a read cycle owns no channel, got %d", len(owners))
+		}
+		if !truncated {
+			t.Errorf("the walk bottomed out on a cycle without reporting truncation, " +
+				"so the caller would treat an unknown owner set as a complete one")
+		}
+	})
+
+	// Two nodes pointing at each other: the depth bound has to catch a cycle
+	// that no single node can detect by looking at itself.
+	t.Run("mutual reference", func(t *testing.T) {
+		cfg := newTestConfig()
+
+		cfg.IOMap["ping"] = &IOHolder{IO: &InputRead{
+			Id: "ping-node", Type: "read", Read: ReadT{Source: "pong"},
+		}}
+		cfg.IOMap["pong"] = &IOHolder{IO: &InputRead{
+			Id: "pong-node", Type: "read", Read: ReadT{Source: "ping"},
+		}}
+
+		owners, truncated := channelOwners(cfg, cfg.IOMap["ping"])
+		if len(owners) != 0 {
+			t.Errorf("a mutual read cycle owns no channel, got %d", len(owners))
+		}
+		if !truncated {
+			t.Errorf("a mutual read cycle was not reported as truncated")
+		}
+	})
 }
 
 // TestNestedChannelIsNotNeutralized pins where the walk stops. A channel node

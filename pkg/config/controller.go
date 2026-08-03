@@ -12,6 +12,7 @@ import (
 	"github.com/kaack/elrs-joystick-control/pkg/proto/generated/pb"
 	"github.com/kaack/elrs-joystick-control/pkg/util"
 	"gopkg.in/tomb.v2"
+	"sync/atomic"
 )
 
 type Controller struct {
@@ -19,6 +20,22 @@ type Controller struct {
 
 	deviceCtl   *dc.Controller
 	EvalDataMap *map[string]*[16]util.CRSFValue `json:"-"`
+
+	// EvalUnresolvedMap is the per-port "do not transmit" flag that goes with
+	// EvalDataMap, published by the same applyConfig call and swapped in the same
+	// place. W17 fork addition.
+	//
+	// A port's flag is set when OutputTransmitter.Eval could not account for
+	// every channel the transmitter drives, which today means only one thing:
+	// the channelOwners walk hit channelOwnerMaxDepth, so the owner set is
+	// incomplete and some channel may be holding a value nothing can neutralize.
+	// The send loop suppresses that port's channel frames while it is set, the
+	// same answer resolveChannels and configSwapGate already give to unknown
+	// state.
+	//
+	// Nil until a config is applied, which reads as "not unresolved" -- the
+	// no-config case is already covered by EvalDataMap having no entry.
+	EvalUnresolvedMap *map[string]*atomic.Bool `json:"-"`
 
 	// EvalNoData is the placeholder reported for a port with no config.
 	//

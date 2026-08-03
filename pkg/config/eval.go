@@ -10,6 +10,7 @@ import (
 	"github.com/kaack/elrs-joystick-control/pkg/util"
 	"golang.org/x/exp/maps"
 	"gopkg.in/tomb.v2"
+	"sync/atomic"
 )
 
 func (c *Controller) alertEvalChan() {
@@ -74,12 +75,18 @@ func EvalAll(config *Config) {
 // new config no longer maps is written by no node, so it keeps the 992 the
 // fresh array was seeded with, permanently. That is what the send loop's
 // configSwapGate covers.
-func applyConfig(config *Config) ([]*IOHolder, map[string]*[16]util.CRSFValue) {
+//
+// The two published maps are built here together and swapped together, and both
+// hold POINTERS the transmitters keep updating in place. Neither map is rebuilt
+// between config applications, which matters: the send loop's configSwapGate
+// reads a new map pointer as a config swap and opens a suppression window.
+func applyConfig(config *Config) ([]*IOHolder, map[string]*[16]util.CRSFValue, map[string]*atomic.Bool) {
 	holders := maps.Values(config.GetTransmitters())
 
 	EvalAll(config)
 
 	published := map[string]*[16]util.CRSFValue{}
+	unresolved := map[string]*atomic.Bool{}
 	for _, holder := range holders {
 		tx, ok := holder.IO.(*OutputTransmitter)
 		if !ok {
@@ -87,9 +94,10 @@ func applyConfig(config *Config) ([]*IOHolder, map[string]*[16]util.CRSFValue) {
 		}
 		tx.Eval(holder.Config)
 		published[tx.Transmitter.Port] = tx.Values
+		unresolved[tx.Transmitter.Port] = tx.Unresolved
 	}
 
-	return holders, published
+	return holders, published, unresolved
 }
 
 func (c *Controller) EvalLoop() error {
@@ -114,16 +122,19 @@ Loop:
 			if config == nil {
 				holders = []*IOHolder{}
 				c.EvalDataMap = &map[string]*[16]util.CRSFValue{} //delete all existing entries
+				c.EvalUnresolvedMap = &map[string]*atomic.Bool{}
 				continue
 			}
 
 			var published map[string]*[16]util.CRSFValue
-			holders, published = applyConfig(config)
+			var unresolved map[string]*atomic.Bool
+			holders, published, unresolved = applyConfig(config)
 
-			//the map is built by applyConfig and swapped in with a single
-			//assignment: the send loop reads this pointer from its own
+			//the maps are built by applyConfig and swapped in with a single
+			//assignment each: the send loop reads these pointers from its own
 			//goroutine and must never observe a half-filled map
 			c.EvalDataMap = &published
+			c.EvalUnresolvedMap = &unresolved
 			c.alertEvalChan()
 		case _ = <-c.StreamEventChan:
 			if config == nil {
