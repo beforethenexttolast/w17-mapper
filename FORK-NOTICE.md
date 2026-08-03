@@ -89,10 +89,32 @@ git config core.hooksPath .githooks
 ```
 
 It refuses a push whose tip tree contains a `w17_first_active` build tag, a
-`FIRST_ACTIVE` identifier in Go/proto source, or an active head-intent enum
-value. Prose that merely documents the boundary (this file) does not trip it.
+`FIRST_ACTIVE` identifier in Go/proto source, an active head-intent enum value,
+or — added 2026-08-04 — any `first_active` / `firstActive`-style identifier in
+code, matched case-insensitively. Prose that merely documents the boundary (this
+file) does not trip it: the hook greps **code globs only**, and `.md` is not
+among them.
 
-**Honest limits:** `--no-verify` bypasses it; it scans the pushed tip tree, not
-every commit in the range; and it does nothing in a clone where
-`core.hooksPath` was never set. It is a speed bump against accident. The
-push-review rule above, the R1–R14 checklist, and owner approval are the gate.
+**What it catches, and what it does not** (verified 2026-08-04, each injection
+committed on a throwaway branch and never pushed):
+
+| Case | Result |
+|---|---|
+| clean HEAD | allowed ✅ |
+| `//go:build w17_first_active` | refused |
+| `const FIRST_ACTIVE = false` (Go) | refused |
+| `HEAD_INTENT_STATE_ACTIVE = 9` (proto) | refused |
+| `const firstActive = false` (Go) | refused — **was allowed before 2026-08-04** |
+| `const enableShaping = false` (Go) | **allowed** — documented limit, see below |
+
+**Honest limits:** the hook matches **names, not the class of compile-time
+gates** — a const under any other name (`enableShaping`, `gateOpen`) passes
+clean, and no grep can close that. This is why
+`head_tracking_unlock_plan.md` §2.3.11.4 is resolved to the Go build tag
+**exclusively**, with the const alternative deleted rather than kept as a
+fallback, and why the tag must be lowercase `w17_first_active` exactly — that
+literal is what the hook greps. Additionally: `--no-verify` bypasses it; it
+scans the pushed tip tree, not every commit in the range; and it does nothing in
+a clone where `core.hooksPath` was never set. It is a speed bump against
+accident. The push-review rule above, the R1–R16 checklist, and owner approval
+are the gate.

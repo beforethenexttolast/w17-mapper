@@ -15,17 +15,44 @@
 #   2. A `FIRST_ACTIVE` identifier in Go or proto source.
 #   3. An active head-intent enum value — the proto must still end at
 #      HEAD_INTENT_STATE_ACTIVE_LOG_ONLY = 8.
+#   4. Any `first_active` / `firstActive`-style identifier in code, ANY case.
+#      Added 2026-08-04. Checks 1 and 2 are case-sensitive on two exact
+#      literals, so the const form §2.3.11.4 once suggested —
+#      `const firstActive = false` — matched NEITHER and passed clean
+#      (proven, injection I4 below). Check 4 closes that specific name.
 # Per head_tracking_unlock_plan.md §2.3.11/§2.3.12: FIRST_ACTIVE is NO-GO/BLOCKED
 # (R1/R2/R6-R9/R12/R13 are hardware/evidence class). No arbiter or shaping code
 # may be published before the §2.3.11.6 review passes.
 #
 # HONEST LIMITS — read these before trusting it
+#   * It matches NAMES, not the class of compile-time gates. A const under any
+#     other name — `enableShaping`, `gateOpen` — still passes clean. No grep can
+#     close that. §2.3.11.4 is therefore resolved to the build tag EXCLUSIVELY,
+#     and the naming contract (lowercase `w17_first_active`, exactly) exists
+#     because that is the literal check 1 greps.
 #   * `git push --no-verify` bypasses this hook entirely.
 #   * It does nothing in a clone where core.hooksPath was never set.
 #   * It scans the pushed tip tree, not every commit in the range.
 # It is a speed bump against accident, NOT a control against intent. The real
 # gate is the push-review rule in FORK-NOTICE.md, the FIRST_ACTIVE review
-# checklist R1-R14, and owner approval.
+# checklist R1-R16, and owner approval.
+#
+# VERIFICATION MATRIX — what it does and does not catch (re-run 2026-08-04,
+# each injection committed on a throwaway worktree branch, never pushed)
+#   clean HEAD                                    -> exit 0, allowed   (correct)
+#   I1  //go:build w17_first_active               -> REFUSED by check 1
+#   I2  const FIRST_ACTIVE = false        (Go)    -> REFUSED by check 2
+#   I3  HEAD_INTENT_STATE_ACTIVE = 9      (proto) -> REFUSED by check 3
+#   I4  const firstActive = false         (Go)    -> REFUSED by check 4
+#                                                    (was ALLOWED before check 4)
+#   I5  const enableShaping = false       (Go)    -> ALLOWED. Not a bug; the
+#                                                    documented class limit above.
+# False-positive surface of check 4, measured over the in-scope globs at
+# 9ba6e06 (120 .go, 2 .proto, 3 .sh, 8 .yaml, no vendor/): ZERO hits. Tree-wide
+# only FORK-NOTICE.md and this file match, and neither is in scope — the globs
+# are code-only, `.md` is not listed and `pre-push` is not `*.sh`. Prose that
+# documents the boundary by name stays exempt BY SCOPE; do not widen the globs
+# to prose without re-measuring.
 
 set -e
 
@@ -62,6 +89,15 @@ while read -r _local_ref local_sha _remote_ref _remote_sha; do
 	# An ACTIVE enum value that is not ACTIVE_LOG_ONLY means an output state exists.
 	if git grep -I -l -E 'HEAD_INTENT_STATE_ACTIVE([^_]|$)' "$local_sha" -- '*.proto' >/dev/null 2>&1; then
 		forbid "the proto declares an active head-intent enum value (must end at ACTIVE_LOG_ONLY = 8)" "$local_sha"
+	fi
+
+	# Catch-all for the NAME, any case and with or without the underscore:
+	# firstActive, FirstActive, first_active, FIRSTACTIVE. Runs last so the three
+	# specific checks above keep their specific refusal messages. Still CODE ONLY
+	# — widening these globs to prose would trip on FORK-NOTICE.md by design.
+	if git grep -I -l -iE 'first_?active' "$local_sha" -- \
+		'*.go' '*.proto' '*.sh' '*.yml' '*.yaml' '*.mk' 'Makefile' 'Dockerfile*' >/dev/null 2>&1; then
+		forbid "a first_active-style identifier is present in code (matched case-insensitively)" "$local_sha"
 	fi
 done
 
