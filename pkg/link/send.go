@@ -88,6 +88,74 @@ func resolveChannels(channelsDataMap *map[string]*[16]util.CRSFValue, portName s
 	return values
 }
 
+// configSwapFailsafeWindow is how long channel frames stay suppressed after the
+// mapper publishes a replacement config. W17 fork addition.
+//
+// It is a MINIMUM, not a timeout: it lengthens the no-frame window, it never
+// ends one (see configSwapGate.holdOff). A window is only useful if it is long
+// enough for the downstream link-loss failsafe to actually fire, which is the
+// entire point of suppressing -- a swap that resumed in microseconds would
+// leave a dropped switch channel latched exactly as before.
+//
+// Sizing: the W17 control firmware forces its Safe state after 500 ms with no
+// valid CRSF frame (failsafe::Config::linkTimeoutMs). 1 s gives that a 2x
+// margin and some room for the TX-module/RX hold on top, which has NOT been
+// measured -- no hardware has run this path. Treat the exact value as a bench
+// item; the invariant to preserve is "comfortably longer than the receiving
+// end's failsafe timeout".
+const configSwapFailsafeWindow = 1000 * time.Millisecond
+
+// configSwapGate holds channel frames off across a config swap. W17 fork
+// addition.
+//
+// The defect it closes: applying a new config rebuilds the transmitter arrays
+// from scratch (config.NewTransmitter -> centeredValues), so a channel the new
+// config no longer maps drops from whatever it held to 992 and stays there --
+// nothing re-evaluates a slot no node writes. 992 normalizes to 0, which sits
+// inside the firmware's +/-250 hysteresis dead band, so a switch decoder HOLDS
+// its previous state: an arm channel that was ON before the swap stays ON, with
+// nothing left driving it. The mapper has no basis for inventing a value for a
+// channel it no longer maps, so it emits nothing at all for a window and lets
+// the receiver's own link-loss failsafe resolve the state -- the same reasoning,
+// and the same shape, as the no-config suppression in resolveChannels.
+//
+// Clock-free by construction: the caller supplies now, so this is testable
+// without sleeping and the send loop keeps a single time source per tick.
+type configSwapGate struct {
+	current *map[string]*[16]util.CRSFValue
+	adopted bool
+	until   time.Time
+}
+
+// observe adopts a newly published eval map and opens a suppression window when
+// the map it is transmitting from has been replaced. Reports whether this call
+// opened one. A nil map is ignored rather than adopted, so a config controller
+// that has not published yet leaves the previous map in place.
+func (g *configSwapGate) observe(published *map[string]*[16]util.CRSFValue, now time.Time) bool {
+	if published == nil {
+		return false
+	}
+	if g.adopted && g.current == published {
+		return false
+	}
+
+	g.current = published
+	g.adopted = true
+	g.until = now.Add(configSwapFailsafeWindow)
+
+	return true
+}
+
+// holdOff reports whether the swap window is still open.
+func (g *configSwapGate) holdOff(now time.Time) bool {
+	return g.adopted && now.Before(g.until)
+}
+
+// values returns the array the gate is currently transmitting from.
+func (g *configSwapGate) values(portName string) *[16]util.CRSFValue {
+	return resolveChannels(g.current, portName)
+}
+
 //goland:noinspection GoUnusedParameter
 func (c *Controller) SendLoop(port *serial.Port, sendChan chan any, recvChan chan any) error {
 
@@ -100,12 +168,14 @@ func (c *Controller) SendLoop(port *serial.Port, sendChan chan any, recvChan cha
 
 	ticker := time.NewTicker(currentRefreshRate)
 
-	var channelsDataMap *map[string]*[16]util.CRSFValue
 	var channelsData *[16]util.CRSFValue
 
 	// W17 fork addition: tracks whether channel frames are currently suppressed,
 	// so the transitions are logged once each instead of at the refresh rate.
 	suppressed := false
+
+	// W17 fork addition: holds frames off across a config swap. See configSwapGate.
+	gate := &configSwapGate{}
 
 	c.sentPacketsCount = 0
 
@@ -173,19 +243,28 @@ Loop:
 			}
 
 		case <-ticker.C:
-			if channelsDataMap != c.configCtl.EvalDataMap && c.configCtl.EvalDataMap != nil {
-				channelsDataMap = c.configCtl.EvalDataMap
+			now := time.Now()
+
+			if gate.observe(c.configCtl.EvalDataMap, now) {
+				fmt.Printf("(send-loop) config published for port %s: suppressing channel frames "+
+					"for %v so the receiver's link-loss failsafe can fire across the swap\n",
+					port.Name, configSwapFailsafeWindow)
 			}
 
-			channelsData = resolveChannels(channelsDataMap, port.Name)
+			channelsData = gate.values(port.Name)
 
 			// W17 fork modification -- failsafe gap. When no config resolves for
 			// this port, send NO channel frame at all rather than a synthesized
 			// one. See resolveChannels for why any invented payload is unsafe.
-			if channelsData == nil {
+			//
+			// The swap window is the same suppression for the same reason: a
+			// replacement config re-seeds every channel it does not map to 992,
+			// and 992 is HELD by a receiver's switch hysteresis. See
+			// configSwapGate.
+			if channelsData == nil || gate.holdOff(now) {
 				if !suppressed {
 					suppressed = true
-					fmt.Printf("(send-loop) no config for port %s: suppressing channel frames "+
+					fmt.Printf("(send-loop) suppressing channel frames on port %s "+
 						"so the receiver's link-loss failsafe can fire\n", port.Name)
 				}
 				continue
@@ -193,7 +272,7 @@ Loop:
 
 			if suppressed {
 				suppressed = false
-				fmt.Printf("(send-loop) config resolved for port %s: resuming channel frames\n", port.Name)
+				fmt.Printf("(send-loop) resuming channel frames on port %s\n", port.Name)
 			}
 
 			if _, err = port.Write(crsf.PackChannels(channelsData)); err != nil {

@@ -57,6 +57,41 @@ func EvalAll(config *Config) {
 	}
 }
 
+// applyConfig prepares a newly applied config for transmission: it evaluates
+// the config, then the synthetic per-port transmitters, and returns those
+// holders together with the port -> channel-array map the send loop reads.
+// W17 fork addition.
+//
+// Evaluating BEFORE publishing is the point. GetTransmitters builds a fresh
+// OutputTransmitter per port through NewTransmitter, whose array starts at
+// centeredValues() -- all 16 slots at 992 -- and copies only the channel-node
+// lists across. Only the DeviceEventChan branch of EvalLoop ever evaluated
+// those synthetic holders, so publishing them first exposed an array in which
+// EVERY channel read 992, not just the ones the new config no longer maps,
+// until some device event happened to arrive.
+//
+// This does NOT make a config swap safe on its own, and cannot: a channel the
+// new config no longer maps is written by no node, so it keeps the 992 the
+// fresh array was seeded with, permanently. That is what the send loop's
+// configSwapGate covers.
+func applyConfig(config *Config) ([]*IOHolder, map[string]*[16]util.CRSFValue) {
+	holders := maps.Values(config.GetTransmitters())
+
+	EvalAll(config)
+
+	published := map[string]*[16]util.CRSFValue{}
+	for _, holder := range holders {
+		tx, ok := holder.IO.(*OutputTransmitter)
+		if !ok {
+			continue
+		}
+		tx.Eval(holder.Config)
+		published[tx.Transmitter.Port] = tx.Values
+	}
+
+	return holders, published
+}
+
 func (c *Controller) EvalLoop() error {
 
 	c.initEvalChan()
@@ -82,15 +117,13 @@ Loop:
 				continue
 			}
 
-			holders = maps.Values(config.GetTransmitters())
-			c.EvalDataMap = &map[string]*[16]util.CRSFValue{} //delete all existing entries
+			var published map[string]*[16]util.CRSFValue
+			holders, published = applyConfig(config)
 
-			for _, holder := range holders {
-				if tx, ok := holder.IO.(*OutputTransmitter); ok {
-					(*c.EvalDataMap)[tx.Transmitter.Port] = tx.Values
-				}
-			}
-			EvalAll(config)
+			//the map is built by applyConfig and swapped in with a single
+			//assignment: the send loop reads this pointer from its own
+			//goroutine and must never observe a half-filled map
+			c.EvalDataMap = &published
 			c.alertEvalChan()
 		case _ = <-c.StreamEventChan:
 			if config == nil {
