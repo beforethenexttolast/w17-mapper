@@ -59,12 +59,12 @@ What that means for this code:
   (12 frames / 312 bytes, across valid / stale / invalid traffic and with
   diagnostics subscribers connected, slow, and disconnected).
 - No shaping or arbitration code exists here. None may be published before the
-  FIRST_ACTIVE review checklist (R1–R14) passes.
+  FIRST_ACTIVE review checklist (R1–R16) passes.
 
 ### Push-review rule (the actual control)
 
 **No push to a public remote may add head-intent shaping, arbitration, or any
-output path until the FIRST_ACTIVE review checklist R1–R14 passes and the owner
+output path until the FIRST_ACTIVE review checklist R1–R16 passes and the owner
 records approval.** That rule is the control; the hook below only catches
 accidents.
 
