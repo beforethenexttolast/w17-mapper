@@ -103,6 +103,15 @@ func (c *Controller) initDeviceChan() {
 	c.DeviceEventChan = make(chan int32)
 }
 
+// AlertDeviceChan is a LOSSY wake-up, not a delivery guarantee: the send is
+// non-blocking on an unbuffered channel, and the eval loop competes with any
+// GetGamepadStream RPC for the receive, so any given alert -- including the
+// single burst a device REMOVAL produces -- can be dropped outright or consumed
+// by a subscriber that does not re-evaluate the transmitters. W17 fork note
+// (2026-08-16 audit, defect 2): safety must therefore never depend on an alert
+// arriving. It does not -- the config eval loop re-evaluates every transmitter
+// on its own heartbeat (config.evalHeartbeatInterval), alerts merely lower the
+// latency when they do get through.
 func (c *Controller) AlertDeviceChan() {
 	c.DeviceEventCount += 1 //it's okay if it overflows
 	select {

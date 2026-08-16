@@ -11,6 +11,7 @@ import (
 	"golang.org/x/exp/maps"
 	"gopkg.in/tomb.v2"
 	"sync/atomic"
+	"time"
 )
 
 func (c *Controller) alertEvalChan() {
@@ -100,14 +101,56 @@ func applyConfig(config *Config) ([]*IOHolder, map[string]*[16]util.CRSFValue, m
 	return holders, published, unresolved
 }
 
-func (c *Controller) EvalLoop() error {
+// evalHeartbeatInterval is how often the eval loop re-evaluates the synthetic
+// transmitters on its own, with no event of any kind. W17 fork addition.
+//
+// The gap it closes (2026-08-16 audit, defect 2 / RESIDUAL C): every path that
+// re-evaluated a transmitter was EVENT-DRIVEN, and every event source was
+// droppable or subscriber-dependent. A device removal produces one burst of SDL
+// events, AlertDeviceChan forwards them as a NON-BLOCKING send on an unbuffered
+// channel with competing receivers (this loop and any GetGamepadStream RPC),
+// and the 25 ms tickers that re-fire evaluation all live inside streaming RPC
+// handlers. With zero gRPC subscribers, one dropped removal alert therefore
+// left the stale pre-removal values transmitting at the full CRSF rate forever
+// -- the hold-last defect all over again, one layer up, and the failsafe work
+// in the Eval path never ran because nothing called Eval.
+//
+// The heartbeat makes neutralization subscriber-independent: whatever happens
+// to the alerts, every transmitter is re-evaluated at least this often, and
+// Eval is where detached devices stop resolving and failsafes are applied. The
+// bound that matters downstream: an input death is reflected in the published
+// arrays within one heartbeat interval, plus one send-loop tick before it is
+// on the wire -- comfortably inside the 500 ms link-timeout the W17 control
+// firmware needs to see, and the same 25 ms cadence the streaming RPCs already
+// impose whenever a UI is connected, so a headless mapper now evaluates no
+// differently from a watched one.
+//
+// The device-event branch stays: it reacts faster when an alert does arrive.
+// The heartbeat is the floor, not a replacement.
+const evalHeartbeatInterval = 25 * time.Millisecond
 
-	c.initEvalChan()
-	c.initStreamChan()
+func (c *Controller) EvalLoop() error {
 
 	var config *Config
 	//goland:noinspection GoPreferNilSlice
 	holders := []*IOHolder{}
+
+	// evalTransmitters is the shared body of the device-event branch and the
+	// heartbeat: re-evaluate every synthetic per-port transmitter and let the
+	// streams know. W17 fork addition (extracted, with the heartbeat).
+	evalTransmitters := func() {
+		for _, holder := range holders {
+			if tx, ok := holder.IO.(*OutputTransmitter); ok {
+				tx.Eval(holder.Config)
+				c.alertEvalChan()
+			}
+		}
+	}
+
+	// W17 fork addition: the subscriber-independent heartbeat. See
+	// evalHeartbeatInterval.
+	heartbeat := time.NewTicker(evalHeartbeatInterval)
+	defer heartbeat.Stop()
 
 	EvalAll(c.Config)
 
@@ -146,13 +189,14 @@ Loop:
 				c.alertEvalChan()
 			}
 		case _ = <-c.deviceCtl.DeviceEventChan:
-			for _, holder := range holders {
-				if tx, ok := holder.IO.(*OutputTransmitter); ok {
-					tx.Eval(holder.Config)
-					c.alertEvalChan()
-				}
-				//fmt.Printf("eval: %v\n", (*c.ChannelsDataMap)[sport.TX.Port])
-			}
+			evalTransmitters()
+			//fmt.Printf("eval: %v\n", (*c.ChannelsDataMap)[sport.TX.Port])
+
+		case <-heartbeat.C:
+			//W17 fork addition: same work as a device event, unconditionally.
+			//A removal whose alert was dropped -- or was consumed by a
+			//competing receiver -- is picked up here within one interval.
+			evalTransmitters()
 		}
 	}
 	return nil
@@ -164,6 +208,15 @@ func (c *Controller) StartEvalLoop() error {
 	if c.evalTomb != nil && c.evalTomb.Alive() {
 		return errors.New("(config) eval loop already active")
 	}
+
+	// W17 fork modification: the event channels are created HERE, before the
+	// goroutine is spawned, rather than inside EvalLoop. Anything that runs
+	// after StartEvalLoop returns can then subscribe to EvalEventChan without
+	// racing the loop's own startup -- previously the fields were written from
+	// the new goroutine, so an early subscriber (a streaming RPC right after
+	// boot, or a test) read them unsynchronized.
+	c.initEvalChan()
+	c.initStreamChan()
 
 	c.evalTomb = &tomb.Tomb{}
 	c.evalTomb.Go(func() error {
