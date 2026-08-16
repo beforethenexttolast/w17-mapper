@@ -120,13 +120,20 @@ func (s *GRPCServer) SetConfig(_ context.Context, req *pb.SetConfigReq) (*pb.Emp
 		Config *cc.Config `json:"config"`
 	}{}
 
-	err = json.Unmarshal([]byte(js), &tmp)
-
-	s.ConfigCtl.SetConfig(tmp.Config)
-
-	if err != nil {
+	// W17 fork modification: a config that fails to decode is rejected BEFORE
+	// it is applied. Upstream called SetConfig first and returned the error
+	// after, so a half-decoded config was already live.
+	if err = json.Unmarshal([]byte(js), &tmp); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+
+	// W17 fork addition: a `read` cycle is a load-time error, not a process
+	// crash or a silently inert channel. See Config.CheckReadCycles.
+	if err = tmp.Config.CheckReadCycles(); err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	s.ConfigCtl.SetConfig(tmp.Config)
 
 	return &pb.Empty{}, nil
 }

@@ -79,13 +79,15 @@ func failsafeFor(ic *IOHolder) util.CRSFValue {
 // channelOwnerMaxDepth bounds the recursion in the subtree walk, and truncation
 // is fail-safe -- see the walk and Eval below.
 //
-// It is NOT a `read`-cycle backstop, whatever the earlier version of this
-// comment claimed. A `read` cycle never reaches this walk: Eval evaluates the
-// entry first, and InputRead._Eval (input_read.go) follows Config.IOMap with no
-// depth bound of its own, so a cycle exhausts the stack and takes the process
-// down before channelOwners is ever called. That unguarded recursion is a
-// pre-existing upstream defect, present at 2b8031a; it is tracked separately and
-// deliberately not fixed here.
+// It is NOT a `read`-cycle backstop, and no longer needs to be: the upstream
+// defect an earlier version of this comment tracked -- InputRead._Eval
+// following Config.IOMap unguarded, so a `read` cycle exhausted the stack and
+// took the process down before this walk was ever called -- is now closed at
+// the source. InputRead carries a re-entrancy guard that turns a cycle into a
+// nan (input_read.go), and CheckReadCycles refuses cyclic configs at load time
+// (read_cycles.go). On a cyclic graph that still reaches this walk, the bound
+// truncates it and Eval flags the transmitter unresolved, so the port is
+// suppressed -- fail-safe on that path too.
 //
 // What the bound actually does is keep the walk itself terminating and bounded
 // in cost when it is entered on a graph that is not a tree, and cap the per-tick
