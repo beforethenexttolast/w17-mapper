@@ -133,6 +133,13 @@ func (s *GRPCServer) SetConfig(_ context.Context, req *pb.SetConfigReq) (*pb.Emp
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
+	// W17 fork addition: plausibility lint, warnings only -- non-W17 rigs must
+	// keep loading. The committed W17 profile is held to zero findings by its
+	// own test. See config.LintConfig.
+	for _, warning := range cc.LintConfig(tmp.Config) {
+		fmt.Printf("(config-lint) WARNING: %s\n", warning)
+	}
+
 	s.ConfigCtl.SetConfig(tmp.Config)
 
 	return &pb.Empty{}, nil

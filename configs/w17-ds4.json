@@ -1,0 +1,382 @@
+{
+  "config": {
+    "input_output_map": {
+      "w17-tx": {
+        "id": "w17-tx",
+        "type": "tx",
+        "tx": {
+          "label": "W17 DualShock 4 profile -- SHARE, OPTIONS and D-pad DOWN are RESERVED (head-tracking affordances, Alternative C) and must stay unbound",
+          "port": "REPLACE-WITH-COM-PORT",
+          "channels": [
+            {
+              "id": "ch1-steering",
+              "type": "channel",
+              "channel": {
+                "label": "CH1 steering -- left stick X",
+                "number": 1,
+                "crsf_min": 172,
+                "crsf_max": 1811,
+                "raw_min": -32768,
+                "raw_max": 32767,
+                "failsafe": 992,
+                "input": {
+                  "id": "steering-axis",
+                  "type": "axis",
+                  "axis": {
+                    "label": "left stick X (SDL axis 0)",
+                    "number": 0,
+                    "deadzone": 2000,
+                    "input": {
+                      "id": "gp-steering",
+                      "type": "gamepad",
+                      "gamepad": { "id": "REPLACE-WITH-DS4-ID", "name": "DualShock 4" }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "id": "ch3-throttle",
+              "type": "channel",
+              "channel": {
+                "label": "CH3 throttle -- R2 forward, L2 brake/reverse, both released = neutral",
+                "number": 3,
+                "crsf_min": 172,
+                "crsf_max": 1811,
+                "raw_min": -32768,
+                "raw_max": 32767,
+                "failsafe": 992,
+                "input": {
+                  "id": "throttle-mix",
+                  "type": "subtract",
+                  "subtract": {
+                    "label": "R2 minus L2 (each rescaled 0..32767 first, so half-pull is half-throttle)",
+                    "left": {
+                      "id": "r2-scaled",
+                      "type": "linear",
+                      "linear": {
+                        "label": "R2 rest(-32768)..full(32767) -> 0..32767",
+                        "input_min": -32768,
+                        "input_max": 32767,
+                        "output_min": 0,
+                        "output_max": 32767,
+                        "input": {
+                          "id": "r2-axis",
+                          "type": "axis",
+                          "axis": {
+                            "label": "R2 analog (SDL axis 5)",
+                            "number": 5,
+                            "deadzone": 0,
+                            "input": {
+                              "id": "gp-r2",
+                              "type": "gamepad",
+                              "gamepad": { "id": "REPLACE-WITH-DS4-ID", "name": "DualShock 4" }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "right": [
+                      {
+                        "id": "l2-scaled",
+                        "type": "linear",
+                        "linear": {
+                          "label": "L2 rest(-32768)..full(32767) -> 0..32767",
+                          "input_min": -32768,
+                          "input_max": 32767,
+                          "output_min": 0,
+                          "output_max": 32767,
+                          "input": {
+                            "id": "l2-axis",
+                            "type": "axis",
+                            "axis": {
+                              "label": "L2 analog (SDL axis 4)",
+                              "number": 4,
+                              "deadzone": 0,
+                              "input": {
+                                "id": "gp-l2",
+                                "type": "gamepad",
+                                "gamepad": { "id": "REPLACE-WITH-DS4-ID", "name": "DualShock 4" }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "id": "ch5-arm",
+              "type": "channel",
+              "channel": {
+                "label": "CH5 arm -- TRIANGLE toggles; a pad dropout disarms (failsafe 172); press TRIANGLE once after a dropout to re-sync the toggle",
+                "number": 5,
+                "crsf_min": 172,
+                "crsf_max": 1811,
+                "raw_min": -32768,
+                "raw_max": 32767,
+                "failsafe": 172,
+                "input": {
+                  "id": "arm-gate",
+                  "type": "and",
+                  "and": {
+                    "label": "toggle AND pad-alive: the liveness probe on the right goes nan when the pad dies, which makes this node nan and drives the channel to its 172 failsafe -- a naked seq would HOLD its state through a dropout",
+                    "output_false": -32768,
+                    "output_true": 32767,
+                    "left": {
+                      "id": "arm-toggle",
+                      "type": "seq",
+                      "seq": {
+                        "label": "TRIANGLE press+release (50..1000 ms) toggles 0/32767; boots DISARMED",
+                        "traversal_method": "clockwise",
+                        "output_values": [0, 32767],
+                        "activation_duration_min": 50,
+                        "activation_duration_max": 1000,
+                        "conditions": [
+                          {
+                            "id": "arm-btn",
+                            "type": "button",
+                            "button": {
+                              "label": "TRIANGLE (SDL button 3)",
+                              "number": 3,
+                              "input": {
+                                "id": "gp-arm",
+                                "type": "gamepad",
+                                "gamepad": { "id": "REPLACE-WITH-DS4-ID", "name": "DualShock 4" }
+                              }
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    "right": [
+                      {
+                        "id": "pad-alive",
+                        "type": "linear",
+                        "linear": {
+                          "label": "liveness probe: constant 1 while the pad resolves, nan once it detaches",
+                          "input_min": -32768,
+                          "input_max": 32767,
+                          "output_min": 1,
+                          "output_max": 1,
+                          "input": {
+                            "id": "alive-axis",
+                            "type": "axis",
+                            "axis": {
+                              "label": "left stick X, used only as a device-liveness source",
+                              "number": 0,
+                              "deadzone": 0,
+                              "input": {
+                                "id": "gp-alive",
+                                "type": "gamepad",
+                                "gamepad": { "id": "REPLACE-WITH-DS4-ID", "name": "DualShock 4" }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            {
+              "id": "ch6-drs",
+              "type": "channel",
+              "channel": {
+                "label": "CH6 DRS -- hold SQUARE to open; releases (and any dropout) close it",
+                "number": 6,
+                "crsf_min": 172,
+                "crsf_max": 1811,
+                "raw_min": -32768,
+                "raw_max": 32767,
+                "failsafe": 172,
+                "input": {
+                  "id": "drs-btn",
+                  "type": "button",
+                  "button": {
+                    "label": "SQUARE (SDL button 0)",
+                    "number": 0,
+                    "active_value": 32767,
+                    "inactive_value": -32768,
+                    "input": {
+                      "id": "gp-drs",
+                      "type": "gamepad",
+                      "gamepad": { "id": "REPLACE-WITH-DS4-ID", "name": "DualShock 4" }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "id": "ch7-gear-up",
+              "type": "channel",
+              "channel": {
+                "label": "CH7 gear up -- R1, momentary (firmware edge-detects)",
+                "number": 7,
+                "crsf_min": 172,
+                "crsf_max": 1811,
+                "raw_min": -32768,
+                "raw_max": 32767,
+                "failsafe": 172,
+                "input": {
+                  "id": "gear-up-btn",
+                  "type": "button",
+                  "button": {
+                    "label": "R1 (SDL button 5)",
+                    "number": 5,
+                    "active_value": 32767,
+                    "inactive_value": -32768,
+                    "input": {
+                      "id": "gp-gear-up",
+                      "type": "gamepad",
+                      "gamepad": { "id": "REPLACE-WITH-DS4-ID", "name": "DualShock 4" }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "id": "ch8-gear-down",
+              "type": "channel",
+              "channel": {
+                "label": "CH8 gear down -- L1, momentary (firmware edge-detects)",
+                "number": 8,
+                "crsf_min": 172,
+                "crsf_max": 1811,
+                "raw_min": -32768,
+                "raw_max": 32767,
+                "failsafe": 172,
+                "input": {
+                  "id": "gear-down-btn",
+                  "type": "button",
+                  "button": {
+                    "label": "L1 (SDL button 4)",
+                    "number": 4,
+                    "active_value": 32767,
+                    "inactive_value": -32768,
+                    "input": {
+                      "id": "gp-gear-down",
+                      "type": "gamepad",
+                      "gamepad": { "id": "REPLACE-WITH-DS4-ID", "name": "DualShock 4" }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "id": "ch9-pan",
+              "type": "channel",
+              "channel": {
+                "label": "CH9 gimbal pan -- right stick X (stick-driven only; NOT the head-tracking path)",
+                "number": 9,
+                "crsf_min": 172,
+                "crsf_max": 1811,
+                "raw_min": -32768,
+                "raw_max": 32767,
+                "failsafe": 992,
+                "input": {
+                  "id": "pan-axis",
+                  "type": "axis",
+                  "axis": {
+                    "label": "right stick X (SDL axis 2)",
+                    "number": 2,
+                    "deadzone": 2000,
+                    "input": {
+                      "id": "gp-pan",
+                      "type": "gamepad",
+                      "gamepad": { "id": "REPLACE-WITH-DS4-ID", "name": "DualShock 4" }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "id": "ch10-tilt",
+              "type": "channel",
+              "channel": {
+                "label": "CH10 gimbal tilt -- right stick Y (stick-driven only; NOT the head-tracking path)",
+                "number": 10,
+                "crsf_min": 172,
+                "crsf_max": 1811,
+                "raw_min": -32768,
+                "raw_max": 32767,
+                "failsafe": 992,
+                "input": {
+                  "id": "tilt-axis",
+                  "type": "axis",
+                  "axis": {
+                    "label": "right stick Y (SDL axis 3)",
+                    "number": 3,
+                    "deadzone": 2000,
+                    "input": {
+                      "id": "gp-tilt",
+                      "type": "gamepad",
+                      "gamepad": { "id": "REPLACE-WITH-DS4-ID", "name": "DualShock 4" }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "id": "ch11-boost",
+              "type": "channel",
+              "channel": {
+                "label": "CH11 ERS boost -- pinned OFF, unbound in v1.0",
+                "number": 11,
+                "crsf_min": 172,
+                "crsf_max": 1811,
+                "raw_min": -32768,
+                "raw_max": 32767,
+                "failsafe": 172,
+                "input": {
+                  "id": "boost-off",
+                  "type": "number",
+                  "number": { "label": "OFF rail", "output": -32768 }
+                }
+              }
+            },
+            {
+              "id": "ch12-overtake",
+              "type": "channel",
+              "channel": {
+                "label": "CH12 ERS overtake -- pinned OFF, unbound in v1.0",
+                "number": 12,
+                "crsf_min": 172,
+                "crsf_max": 1811,
+                "raw_min": -32768,
+                "raw_max": 32767,
+                "failsafe": 172,
+                "input": {
+                  "id": "overtake-off",
+                  "type": "number",
+                  "number": { "label": "OFF rail", "output": -32768 }
+                }
+              }
+            },
+            {
+              "id": "ch13-drive-mode",
+              "type": "channel",
+              "channel": {
+                "label": "CH13 drive mode -- pinned LOW = TRAINING (gentle default); RACE=mid, ERS=high, rebind later via the editor",
+                "number": 13,
+                "crsf_min": 172,
+                "crsf_max": 1811,
+                "raw_min": -32768,
+                "raw_max": 32767,
+                "failsafe": 172,
+                "input": {
+                  "id": "drive-mode-low",
+                  "type": "number",
+                  "number": { "label": "LOW rail = TRAINING", "output": -32768 }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
