@@ -153,6 +153,22 @@ definitions:
             title: Hat number
             description: Hat index number (starts at 0)
             type: integer
+          direction:
+            title: Direction
+            description: |
+              Decode ONE direction of the hat as a momentary button: the output
+              is **truthy** while that direction's bit is set in the hat state
+              (diagonals count for both of their component directions), and
+              **falsy** otherwise.
+
+
+              Leave unset for the legacy scalar read, which is
+              **direction-blind**: hats are reported as a bitmask, so without a
+              direction every pressed position reads the same. Any binding that
+              cares which way the hat points -- a D-pad deadman, D-pad menu
+              keys -- must set a direction.
+            type: string
+            enum: ["up", "down", "left", "right"]
           output_invert:
             title: Invert output
             description: Multiply output value by -1

@@ -42,8 +42,46 @@ func (d *InputGamepad) Button(button int) util.RawValue {
 	return util.RawValue(d.Joy.Button(button))
 }
 
+// Hat is the legacy DIRECTION-BLIND read, kept only so pre-existing configs
+// with a plain `hat` node keep the behaviour they had.
+//
+// It is close to meaningless: SDL reports a hat as a BITMASK (centered 0,
+// up 1, right 2, down 4, left 8, diagonals OR-ed), and this maps that mask
+// through a [-1, 1] input range -- so every pressed direction clamps to
+// MaxRaw and centered reads as mid-scale. Any binding that cares WHICH way
+// the hat points must use HatDirection instead (config: `hat` node with a
+// `direction` field). W17 fork note; 2026-08-16 audit, defect 13.
 func (d *InputGamepad) Hat(hat int) util.RawValue {
 	return util.MapRange(util.RawValue(d.Joy.Hat(hat)), -1, 1, util.MinRaw, util.MaxRaw)
+}
+
+// HatDirections maps the config-level direction names onto the SDL hat
+// bitmask. W17 fork addition (2026-08-16 audit, defect 13: hats were
+// direction-blind, which broke any per-direction D-pad binding).
+var HatDirections = map[string]uint8{
+	"up":    sdl.HAT_UP,
+	"right": sdl.HAT_RIGHT,
+	"down":  sdl.HAT_DOWN,
+	"left":  sdl.HAT_LEFT,
+}
+
+// DecodeHatDirection is the pure per-direction decode: truthy raw when the
+// direction's bit is set in the SDL hat state, falsy raw otherwise. Diagonals
+// therefore activate BOTH of their component directions -- holding a D-pad
+// diagonal still counts as, say, DOWN, which is what a deadman-style binding
+// needs. W17 fork addition; separated from the SDL handle so it can be tested
+// without hardware.
+func DecodeHatDirection(state uint8, direction uint8) util.RawValue {
+	if state&direction != 0 {
+		return util.DefaultTruthyRawValue
+	}
+	return util.DefaultFalsyRawValue
+}
+
+// HatDirection reads one direction of one hat as a momentary button. See
+// DecodeHatDirection for the semantics. W17 fork addition.
+func (d *InputGamepad) HatDirection(hat int, direction uint8) util.RawValue {
+	return DecodeHatDirection(d.Joy.Hat(hat), direction)
 }
 
 func (d *InputGamepad) Close() {
