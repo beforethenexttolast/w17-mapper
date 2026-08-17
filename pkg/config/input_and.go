@@ -42,6 +42,17 @@ func (i *InputAnd) _Eval(c *Config) (src IOType, out util.RawValue, ch util.Chan
 	if i.And.Left != nil {
 		_, out, ch, nan = i.And.Left.Eval(c)
 		//the left argument is falsy, check fails (exit early)
+		//
+		//W17 fork note (upstream asymmetry, deliberately unchanged): a nan
+		//LEFT operand is SWALLOWED -- evaluation just falls through to the
+		//right side, and only an all-nan RIGHT side makes the node nan. So a
+		//device-fed node on the LEFT loses its failure signal here whenever
+		//anything on the right still resolves: and(device-probe, constant)
+		//stays healthy with the device gone. The committed W17 arm gate
+		//depends on the OTHER direction and is shaped for it -- toggle on the
+		//left, device-fed liveness probe on the RIGHT, where its nan makes
+		//the whole node nan (all-nan right, below). Do not put a device-fed
+		//node on an and's LEFT in a future profile without revisiting this.
 		if !nan && isFalsy(out) {
 			return OutputOrNil(nil, i.And.OutputFalse, ch, false)
 		}

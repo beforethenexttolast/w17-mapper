@@ -800,6 +800,25 @@ definitions:
               autocomplete: traverse
             enum: ["clockwise", "ping-pong"]
             default: "ping-pong"
+          reset_on_nan:
+            title: Reset on signal loss
+            description: |
+              When **every** condition stops producing a value -- typically
+              because the gamepad they read was unplugged -- reset the sequence
+              to its **first** output value instead of holding the current
+              position, and require a fresh press (a full release-then-press
+              after the signal returns) before the next activation.
+
+
+              Leave this off for ordinary selectors. Turn it **on** when the
+              sequence drives a safety-relevant toggle such as an ARM switch:
+              without it, the toggle silently keeps its last state through a
+              dropout, so a controller that auto-reconnects would re-arm with
+              no user input at all.
+            type: boolean
+            default: false
+            $meta:
+              autocomplete: boolean
           activation_duration_min:
             title: Activation duration min
             type: integer

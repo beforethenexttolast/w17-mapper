@@ -20,9 +20,32 @@ type SeqT struct {
 	ActivationDurationMin util.RawValue    `json:"activation_duration_min"`
 	ActivationDurationMax util.RawValue    `json:"activation_duration_max"`
 
+	// ResetOnNaN makes an all-nan episode (every condition unreadable -- the
+	// input device unplugged) return the sequence to its FIRST output value,
+	// instead of holding the current position. W17 fork addition, opt-in;
+	// default false keeps upstream behaviour exactly.
+	//
+	// Why it exists: a seq used as an arm TOGGLE holds "armed" through a
+	// gamepad dropout (the allNan branch below returns the current value as
+	// healthy), so when the pad auto-reconnects, the armed state comes back
+	// with ZERO user input -- a silent re-arm. With this flag the dropout
+	// itself resets the toggle to output_values[0] ("boots disarmed"
+	// semantics), and re-arming requires a fresh deliberate press: a press
+	// already in progress when the signal died is NOT honoured on recovery
+	// (see needsFreshPress).
+	ResetOnNaN bool `json:"reset_on_nan"`
+
 	currentOutputIndex int
 	currentDirection   TraversalDirection
 	highEdgeTime       *time.Time
+
+	// needsFreshPress arms after a ResetOnNaN reset and clears on the first
+	// tick that observes the conditions FALSY. While set, a truthy condition
+	// does not open an activation window -- so a press that started before
+	// (or spanned) the nan episode cannot register as a toggle; only a full
+	// release-then-press after recovery can. Unexported runtime state, like
+	// currentOutputIndex.
+	needsFreshPress bool
 }
 
 // InputSeq *** Sequence ***
@@ -236,12 +259,33 @@ func (i *InputSeq) _Eval(c *Config) (src IOType, out util.RawValue, ch util.Chan
 
 	//if all conditions are not numbers, result is the current output value
 	if allNan {
+		//W17 fork addition -- opt-in signal-loss reset. Holding the current
+		//value here is what let an arm toggle survive a gamepad dropout and
+		//silently re-arm on reconnect. With ResetOnNaN the episode returns
+		//the sequence to its first value and demands a fresh press before the
+		//next activation. See SeqT.ResetOnNaN.
+		if i.Seq.ResetOnNaN {
+			i.Mutex.Lock()
+			i.Seq.currentOutputIndex = 0
+			i.Seq.currentDirection = ForwardDirection
+			i.Seq.needsFreshPress = true
+			i.Mutex.Unlock()
+			i.Seq.highEdgeTime = nil
+			return nil, (*values)[0], -1, false
+		}
 		return nil, (*values)[i.Seq.currentOutputIndex], -1, false
 	}
 
 	currentTime := time.Now()
 
 	if allTrue {
+		//W17 fork addition: a high observed after a ResetOnNaN episode is not
+		//a fresh press -- it may have started before the signal died. Ignore
+		//it until the conditions have been seen FALSY once (below).
+		if i.Seq.needsFreshPress {
+			return nil, (*values)[i.Seq.currentOutputIndex], -1, false
+		}
+
 		//mark the first time the edge goes high
 		if i.Seq.highEdgeTime == nil {
 			i.Seq.highEdgeTime = &currentTime
@@ -249,6 +293,10 @@ func (i *InputSeq) _Eval(c *Config) (src IOType, out util.RawValue, ch util.Chan
 
 		return nil, (*values)[i.Seq.currentOutputIndex], -1, false
 	}
+
+	//W17 fork addition: the conditions are readable and FALSY -- the input is
+	//released, so the next press is a fresh one. No-op unless ResetOnNaN set it.
+	i.Seq.needsFreshPress = false
 
 	//copy the pointer so that's safe to use after nil check
 	highEdgeTime := i.Seq.highEdgeTime
