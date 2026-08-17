@@ -185,6 +185,50 @@ func TestCheckReadCyclesDetects(t *testing.T) {
 		}
 	})
 
+	t.Run("loop under seq conditions and and operands", func(t *testing.T) {
+		// Review obs 4: the closing read here is buried two container types
+		// deep -- inside a seq's CONDITIONS list, which itself sits on an
+		// and's LEFT -- the exact shape the committed arm chain uses. The
+		// walk must reach it through both Children() implementations.
+		cfg := newTestConfig()
+
+		conditions := []*IOHolder{readNode("nested-read", "loop")}
+		values := []util.RawValue{0, 32767}
+		method := ClockwiseTraversal
+		seqHolder := &IOHolder{IO: &InputSeq{
+			Id: "seq-under-gate", Type: "seq",
+			Seq: SeqT{
+				Conditions: &conditions, OutputValues: &values,
+				TraversalMethod: &method,
+			},
+		}}
+		right := []*IOHolder{numberInput(1)}
+		cfg.IOMap["gate"] = &IOHolder{IO: &InputAnd{
+			Id: "gate", Type: "and",
+			And: AndT{Left: seqHolder, Right: &right},
+		}}
+		cfg.IOMap["loop"] = readNode("loop", "gate")
+
+		err := cfg.CheckReadCycles()
+		if err == nil {
+			t.Fatal("expected a cycle error for a loop routed through seq " +
+				"conditions under an and operand")
+		}
+		for _, name := range []string{"gate", "loop"} {
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("the error should spell out the loop; %q missing from %q",
+					name, err)
+			}
+		}
+
+		// The runtime guard must terminate this shape too. No value assertion:
+		// seq deliberately swallows nan conditions and and swallows a nan
+		// left, so the cycle can evaluate to a NUMBER here -- termination,
+		// not nan, is the property the guard owns on this path (the load-time
+		// refusal above is what keeps such configs out entirely).
+		cfg.IOMap["gate"].Eval(cfg)
+	})
+
 	t.Run("dangling source is not a cycle", func(t *testing.T) {
 		cfg := newTestConfig()
 		cfg.IOMap["a"] = readNode("a", "missing")
