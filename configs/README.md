@@ -36,14 +36,14 @@ firmware treats values outside its 100/1900 plausibility band as ABSENT, so
 the upstream schema defaults (0/1984) can never arm the car — that is audit
 defect 3, and the lint now flags it.
 
-| CRSF ch | Control | Kind | DS4 binding | Failsafe |
+| CRSF ch | Control | Kind | DS4 binding (SDL HIDAPI layout) | Failsafe |
 |---|---|---|---|---|
 | 1 | steering | analog | left stick X (axis 0, deadzone 2000) | 992 center |
 | 3 | throttle | analog | R2 forward, L2 brake/reverse (axes 5/4, each rescaled 0..32767, subtracted) | 992 center |
 | 5 | arm | 2-pos switch | TRIANGLE (button 3) toggle — see arm chain below | **172 OFF** |
-| 6 | DRS | 2-pos switch | hold SQUARE (button 0) | **172 closed** |
-| 7 | gear up | momentary | R1 (button 5) | **172** |
-| 8 | gear down | momentary | L1 (button 4) | **172** |
+| 6 | DRS | 2-pos switch | hold SQUARE (button 2) | **172 closed** |
+| 7 | gear up | momentary | R1 (button 10) | **172** |
+| 8 | gear down | momentary | L1 (button 9) | **172** |
 | 9 | gimbal pan | analog | right stick X (axis 2) — stick-driven, NOT head tracking | 992 center |
 | 10 | gimbal tilt | analog | right stick Y (axis 3) — stick-driven, NOT head tracking | 992 center |
 | 11 | ERS boost | 2-pos switch | **pinned OFF** (number node at the rail) | **172** |
@@ -58,40 +58,61 @@ asserts exactly that.
 
 ## Reserved inputs — do not bind
 
-**SHARE (button 8), OPTIONS (button 9) and the D-pad (hat 0, DOWN especially)
+**SHARE (button 4), OPTIONS (button 6) and the D-pad (hat 0, DOWN especially)
 are deliberately unbound.** They are reserved for the recorded head-tracking
 affordances (Alternative C: D-pad-DOWN deadman, SHARE/OPTIONS
 recenter/enable) so that no rebinding is needed when that gated milestone is
-reached. A profile test fails if any of them acquires a binding. Also
-unbound: CROSS, CIRCLE, L2/R2 digital clicks, L3/R3, PS, touchpad.
+reached. The reservation is by **physical button** — under the DirectInput
+fallback those same two buttons enumerate as 8/9 (see the layout section).
+Profile tests fail if either acquires a binding, and pin the bound set to
+exactly SQUARE 2 / TRIANGLE 3 / L1 9 / R1 10. Also unbound: CROSS (0),
+CIRCLE (1), PS (5), L3/R3 (7/8), touchpad.
 
 ## The arm chain, and why it is not just a toggle
 
-`ch5 = and(seq-toggle, liveness-probe)`:
+`ch5 = and(seq-toggle{reset_on_nan}, liveness-probe)`:
 
 - the `seq` toggles 0/32767 on a deliberate TRIANGLE press-and-release
   (50–1000 ms) and **boots disarmed**;
 - a naked `seq` would **hold its state when the pad dies** (its conditions go
   nan and it keeps returning the current value — `input_seq.go`), quietly
   re-opening the latch defect;
-- so the toggle is AND-ed with a liveness probe (left stick X through a
-  `linear` pinned to constant 1): pad alive → probe is 1, pad dead → probe is
-  nan → the whole `and` goes nan → the channel falls to its 172 failsafe and
-  the car disarms.
+- `reset_on_nan` closes the reconnect half of that hazard: **any dropout
+  returns the toggle itself to DISARMED**, and a press that started before or
+  spanned the dropout is discarded — re-arming always takes a fresh, full
+  release-then-press after the pad is back. A controller auto-reconnect can
+  therefore never silently re-arm the car (the firmware ArmGate has no
+  reconnect policy of its own; the mapper must not hand it an armed channel
+  uninvited);
+- the liveness probe (left stick X through a `linear` pinned to constant 1)
+  stays as defense in depth: pad dead → probe nan → the whole `and` goes nan →
+  the channel falls to its 172 failsafe for the duration of the outage. The
+  probe sits deliberately on the `and`'s RIGHT side — upstream `and` swallows
+  a nan LEFT operand and only an all-nan RIGHT side fails the node
+  (`input_and.go`), so a device-fed probe on the LEFT would lose its failure
+  signal. Do not flip that shape in a future profile without revisiting.
 
-After a dropout the mapper-side toggle may still be ON; the transmitted value
-returns high when the pad reconnects. Whether the car actually re-arms then is
-the firmware arm-gate's decision (its failsafe recovery policy), not the
-mapper's — but press TRIANGLE once after any dropout to re-sync the toggle
-state regardless.
+## SDL layout — which one, and the bench check owed
 
-## SDL layout caveat — one bench check owed
+The profile binds the **SDL HIDAPI PS4 driver layout**, the default under the
+bundled SDL2: joystick buttons come out in GameController order — CROSS 0,
+CIRCLE 1, **SQUARE 2, TRIANGLE 3**, SHARE 4, PS 5, OPTIONS 6, L3 7, R3 8,
+**L1 9, R1 10** — and axes are LX 0, LY 1, RX 2, RY 3, L2 4, R2 5.
 
-Button indices (square 0, cross 1, circle 2, triangle 3, L1 4, R1 5, SHARE 8,
-OPTIONS 9) are stable across SDL's HIDAPI and DirectInput paths for the DS4.
-Axis indices are **not**: the profile binds the SDL HIDAPI layout (LX 0, LY 1,
-RX 2, RY 3, L2 4, R2 5); the legacy DirectInput path instead reports L2=3,
-R2=4, RY=5. Before first drive, open the mapper UI, wiggle each stick and
-trigger, and confirm the indices — if the right stick Y shows on axis 5, remap
-the three axis `number`s (tilt→5, L2→3, R2→4). This is the same class of
-recorded validation debt as the wheel bench check.
+The legacy **DirectInput fallback moves BOTH axes and buttons** (an earlier
+revision of this file claimed buttons were stable across the two paths; that
+was false): buttons revert to the raw-HID order (SQUARE 0, CROSS 1, CIRCLE 2,
+TRIANGLE 3, L1 4, R1 5, L2 6, R2 7, SHARE 8, OPTIONS 9, L3 10, R3 11, PS 12,
+touchpad 13) and axes to L2 3, R2 4, RY 5.
+
+**Pre-drive bench check (owed, same class as the wheel check):** open the
+mapper UI with the pad connected and verify BOTH halves —
+
+1. axes: wiggle right stick Y and squeeze each trigger; expect RY on axis 3,
+   L2 on 4, R2 on 5;
+2. buttons: press SQUARE, TRIANGLE, L1, R1 one at a time; expect 2, 3, 9, 10.
+
+If the pad instead shows the DirectInput numbers, remap in one pass: axes
+tilt→5, L2→3, R2→4; buttons DRS→0, arm stays 3, gear down→4, gear up→5; and
+note the reserved pair SHARE/OPTIONS then lives at 8/9 (the reservation is by
+physical button, not by index).

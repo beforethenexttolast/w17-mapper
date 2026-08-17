@@ -111,7 +111,7 @@
               "id": "ch5-arm",
               "type": "channel",
               "channel": {
-                "label": "CH5 arm -- TRIANGLE toggles; a pad dropout disarms (failsafe 172); press TRIANGLE once after a dropout to re-sync the toggle",
+                "label": "CH5 arm -- TRIANGLE toggles; a pad dropout disarms AND resets the toggle (reset_on_nan), so re-arming always takes a fresh deliberate press",
                 "number": 5,
                 "crsf_min": 172,
                 "crsf_max": 1811,
@@ -129,17 +129,18 @@
                       "id": "arm-toggle",
                       "type": "seq",
                       "seq": {
-                        "label": "TRIANGLE press+release (50..1000 ms) toggles 0/32767; boots DISARMED",
+                        "label": "TRIANGLE press+release (50..1000 ms) toggles 0/32767; boots DISARMED; reset_on_nan returns it to DISARMED on any pad dropout, so an auto-reconnect can never silently re-arm",
                         "traversal_method": "clockwise",
                         "output_values": [0, 32767],
                         "activation_duration_min": 50,
                         "activation_duration_max": 1000,
+                        "reset_on_nan": true,
                         "conditions": [
                           {
                             "id": "arm-btn",
                             "type": "button",
                             "button": {
-                              "label": "TRIANGLE (SDL button 3)",
+                              "label": "TRIANGLE (SDL HIDAPI button 3)",
                               "number": 3,
                               "input": {
                                 "id": "gp-arm",
@@ -197,8 +198,8 @@
                   "id": "drs-btn",
                   "type": "button",
                   "button": {
-                    "label": "SQUARE (SDL button 0)",
-                    "number": 0,
+                    "label": "SQUARE (SDL HIDAPI button 2)",
+                    "number": 2,
                     "active_value": 32767,
                     "inactive_value": -32768,
                     "input": {
@@ -225,8 +226,8 @@
                   "id": "gear-up-btn",
                   "type": "button",
                   "button": {
-                    "label": "R1 (SDL button 5)",
-                    "number": 5,
+                    "label": "R1 (SDL HIDAPI button 10)",
+                    "number": 10,
                     "active_value": 32767,
                     "inactive_value": -32768,
                     "input": {
@@ -253,8 +254,8 @@
                   "id": "gear-down-btn",
                   "type": "button",
                   "button": {
-                    "label": "L1 (SDL button 4)",
-                    "number": 4,
+                    "label": "L1 (SDL HIDAPI button 9)",
+                    "number": 9,
                     "active_value": 32767,
                     "inactive_value": -32768,
                     "input": {

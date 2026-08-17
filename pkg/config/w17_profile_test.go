@@ -27,13 +27,29 @@ import (
 
 const w17ProfilePath = "../../configs/w17-ds4.json"
 
-// DS4 buttons the profile must leave alone: SHARE and OPTIONS (SDL buttons 8
-// and 9 in the layout the profile binds) are reserved for the head-tracking
-// affordances, alongside D-pad DOWN -- covered by requiring NO hat nodes at
-// all.
+// DS4 buttons the profile must leave alone, in the SDL HIDAPI PS4 layout the
+// profile binds (joystick buttons in GameController order: cross 0, circle 1,
+// square 2, triangle 3, SHARE 4, PS 5, OPTIONS 6, L3 7, R3 8, L1 9, R1 10).
+// SHARE and OPTIONS are reserved for the head-tracking affordances, alongside
+// D-pad DOWN -- the D-pad is covered by requiring NO hat nodes at all. The
+// reservation is by PHYSICAL button: if a bench check finds the pad
+// enumerating through the DirectInput fallback instead, the indices of BOTH
+// the bindings and this reserved set move together (see configs/README.md).
 var w17ReservedButtons = map[int32]string{
-	8: "SHARE",
-	9: "OPTIONS",
+	4: "SHARE",
+	6: "OPTIONS",
+}
+
+// w17BoundButtons is the exact set of buttons the profile may bind, HIDAPI
+// order: SQUARE 2 (DRS), TRIANGLE 3 (arm), L1 9 (gear down), R1 10 (gear up).
+// Pinned as a SET so a rebinding to a wrong index -- the review blocker F1
+// was exactly that, raw-HID button numbers paired with HIDAPI axis numbers --
+// fails loudly here instead of at the bench.
+var w17BoundButtons = map[int32]string{
+	2:  "SQUARE (DRS)",
+	3:  "TRIANGLE (arm)",
+	9:  "L1 (gear down)",
+	10: "R1 (gear up)",
 }
 
 func loadW17Profile(t *testing.T) (*Config, []byte) {
@@ -130,10 +146,15 @@ func TestW17ProfileChannelMap(t *testing.T) {
 }
 
 // TestW17ProfileLeavesReservedInputsUnbound walks every node in the profile:
-// no button node may reference SHARE or OPTIONS, and no hat node may exist at
-// all (the D-pad, DOWN included, belongs to the head-tracking affordances).
+// no button node may reference SHARE or OPTIONS, no hat node may exist at all
+// (the D-pad, DOWN included, belongs to the head-tracking affordances), and
+// the buttons that ARE bound must be exactly the four intended ones -- a
+// binding on any unexpected index means the profile has drifted off the
+// HIDAPI layout it documents.
 func TestW17ProfileLeavesReservedInputsUnbound(t *testing.T) {
 	cfg, _ := loadW17Profile(t)
+
+	bound := map[int32][]string{}
 
 	var walk func(ih *IOHolder)
 	walk = func(ih *IOHolder) {
@@ -142,6 +163,7 @@ func TestW17ProfileLeavesReservedInputsUnbound(t *testing.T) {
 		}
 		switch node := ih.IO.(type) {
 		case *InputButton:
+			bound[node.Button.Number] = append(bound[node.Button.Number], node.Id)
 			if name, reserved := w17ReservedButtons[node.Button.Number]; reserved {
 				t.Errorf("button %d (%s) is bound by %q -- it is reserved for the "+
 					"head-tracking affordances", node.Button.Number, name, node.Id)
@@ -158,6 +180,19 @@ func TestW17ProfileLeavesReservedInputsUnbound(t *testing.T) {
 	}
 	for _, ih := range cfg.IOMap {
 		walk(ih)
+	}
+
+	for number, ids := range bound {
+		if _, expected := w17BoundButtons[number]; !expected {
+			t.Errorf("button %d is bound by %v but is not in the documented "+
+				"HIDAPI binding set %v", number, ids, w17BoundButtons)
+		}
+	}
+	for number, role := range w17BoundButtons {
+		if _, ok := bound[number]; !ok {
+			t.Errorf("button %d (%s) is documented as bound but no node binds it",
+				number, role)
+		}
 	}
 }
 
@@ -208,5 +243,10 @@ func TestW17ProfileArmChainShape(t *testing.T) {
 	if !seq.Seq.TraversalMethod.IsValid() {
 		t.Error("the arm toggle needs an explicit traversal_method: without one, " +
 			"seq.NextValue always returns the first element and the toggle is dead")
+	}
+	if !seq.Seq.ResetOnNaN {
+		t.Error("the arm toggle must set reset_on_nan: without it, the toggle " +
+			"holds ARMED through a dropout and a pad auto-reconnect re-arms ch5 " +
+			"with zero user input (review blocker F2)")
 	}
 }
