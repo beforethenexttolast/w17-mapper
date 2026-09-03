@@ -10,7 +10,6 @@ import (
 	cc "github.com/kaack/elrs-joystick-control/pkg/config"
 	dc "github.com/kaack/elrs-joystick-control/pkg/devices"
 	"github.com/kaack/elrs-joystick-control/pkg/headintent"
-	hc "github.com/kaack/elrs-joystick-control/pkg/http"
 	lc "github.com/kaack/elrs-joystick-control/pkg/link"
 	"github.com/kaack/elrs-joystick-control/pkg/proto/generated/pb"
 	sc "github.com/kaack/elrs-joystick-control/pkg/serial"
@@ -19,6 +18,24 @@ import (
 	"net"
 )
 
+// HTTPController is the web-UI lifecycle the gRPC layer drives, as an
+// INTERFACE rather than the concrete *pkg/http.Controller. W17 fork
+// modification; no behaviour change -- *http.Controller satisfies it exactly.
+//
+// Why: pkg/http embeds the built web bundle (webapp/fs.go `//go:embed dist/*`),
+// which does not exist until `go generate ./...` has run npm + webpack. Any
+// package importing pkg/server therefore could not even COMPILE on a clean
+// checkout, which is why pkg/server's own tests (this file's siblings) had
+// never run outside a builder image, and why the headless bring-up path --
+// pkg/client -> gRPC -> SetConfig/StartLink, the one race day uses -- had no
+// end-to-end test at all (MAP-1). Depending on the interface removes the web
+// bundle from the control path's build graph: the giftee-facing product is
+// headless, so the gRPC layer has no business requiring the UI to build.
+type HTTPController interface {
+	Start() error
+	Stop() error
+}
+
 type Controller struct {
 	gRPCPort   int
 	gRPCServer *grpc.Server
@@ -26,7 +43,7 @@ type Controller struct {
 	serialCtl  *sc.Controller
 	configCtl  *cc.Controller
 	linkCtl    *lc.Controller
-	httpCtl    *hc.Controller
+	httpCtl    HTTPController
 	headIntent *headintent.Broadcaster
 
 	gRPCTomb *tomb.Tomb
@@ -36,7 +53,7 @@ type Controller struct {
 // head-intent diagnostics source; pass nil when head-intent ingest is disabled
 // (the WatchHeadIntentDiagnostics RPC then reports Unavailable). It is a
 // diagnostics consumer only and carries no control path.
-func NewCtl(gRPCPort int, gRPCServer *grpc.Server, devicesCtl *dc.Controller, serialCtl *sc.Controller, configCtl *cc.Controller, linkCtl *lc.Controller, httpCtl *hc.Controller, headIntent *headintent.Broadcaster) *Controller {
+func NewCtl(gRPCPort int, gRPCServer *grpc.Server, devicesCtl *dc.Controller, serialCtl *sc.Controller, configCtl *cc.Controller, linkCtl *lc.Controller, httpCtl HTTPController, headIntent *headintent.Broadcaster) *Controller {
 	serverCtl := &Controller{
 		gRPCPort:   gRPCPort,
 		gRPCServer: gRPCServer,

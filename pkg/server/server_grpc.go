@@ -13,7 +13,6 @@ import (
 	cc "github.com/kaack/elrs-joystick-control/pkg/config"
 	dc "github.com/kaack/elrs-joystick-control/pkg/devices"
 	"github.com/kaack/elrs-joystick-control/pkg/headintent"
-	"github.com/kaack/elrs-joystick-control/pkg/http"
 	lc "github.com/kaack/elrs-joystick-control/pkg/link"
 	"github.com/kaack/elrs-joystick-control/pkg/proto/generated/pb"
 	sc "github.com/kaack/elrs-joystick-control/pkg/serial"
@@ -30,7 +29,10 @@ type GRPCServer struct {
 	SerialCtl  *sc.Controller
 	ConfigCtl  *cc.Controller
 	LinkCtl    *lc.Controller
-	HTTPCtl    *http.Controller
+	// HTTPCtl is the web-UI lifecycle, as an interface -- see HTTPController.
+	// It is nil in tests that exercise only the config/link RPCs; the two HTTP
+	// RPCs report Unavailable rather than panicking in that case.
+	HTTPCtl HTTPController
 	// HeadIntent is the read-only, LOG-ONLY head-intent diagnostics source. It is
 	// nil unless the mapper was started with -headtrack-ingest; when nil the
 	// WatchHeadIntentDiagnostics RPC reports Unavailable. It is a diagnostics
@@ -146,6 +148,9 @@ func (s *GRPCServer) SetConfig(_ context.Context, req *pb.SetConfigReq) (*pb.Emp
 }
 
 func (s *GRPCServer) StartHTTP(context.Context, *pb.Empty) (*pb.Empty, error) {
+	if s.HTTPCtl == nil {
+		return nil, status.Error(codes.Unavailable, "no web UI in this build")
+	}
 	if err := s.HTTPCtl.Start(); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -153,6 +158,9 @@ func (s *GRPCServer) StartHTTP(context.Context, *pb.Empty) (*pb.Empty, error) {
 }
 
 func (s *GRPCServer) StopHTTP(context.Context, *pb.Empty) (*pb.Empty, error) {
+	if s.HTTPCtl == nil {
+		return nil, status.Error(codes.Unavailable, "no web UI in this build")
+	}
 	if err := s.HTTPCtl.Stop(); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
