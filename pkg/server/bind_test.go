@@ -73,6 +73,15 @@ func TestTheDefaultActuallyBindsLoopbackOnly(t *testing.T) {
 
 // TestBindAllIsStillReachable is the guard against over-correcting: the
 // hobbyist path must still be able to ask for every interface.
+//
+// Yes, this opens a real 0.0.0.0 listener during `go test`, in a suite whose
+// whole subject is NOT binding 0.0.0.0 (review finding N10). It is deliberate
+// and it is the point: the sibling test above asks the KERNEL what the default
+// bound rather than trusting the string, and the same standard has to apply to
+// the escape hatch or -bind-all could quietly stop working and no test would
+// notice. What makes it harmless: an ephemeral port (:0), nothing registered on
+// it, no accept loop, no gRPC server, and it is closed before the test returns
+// -- so there is a socket, and there is nothing behind it.
 func TestBindAllIsStillReachable(t *testing.T) {
 	lis, err := net.Listen("tcp", listenAddr("", 0))
 	if err != nil {
