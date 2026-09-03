@@ -13,8 +13,11 @@
 # WHAT IT BLOCKS
 #   1. A `w17_first_active` build tag in code/build files.
 #   2. A `FIRST_ACTIVE` identifier in Go or proto source.
-#   3. An active head-intent enum value — the proto must still end at
-#      HEAD_INTENT_STATE_ACTIVE_LOG_ONLY = 8.
+#   3. Any departure from the head-intent enum's exact shape: values 0..8, each
+#      declared once, the maximum named HEAD_INTENT_STATE_ACTIVE_LOG_ONLY, and
+#      no other name containing ACTIVE. Rewritten 2026-09-04 from a negative
+#      regex that refused only the bare identifier HEAD_INTENT_STATE_ACTIVE
+#      (review finding MAP-13; injections I6-I9 below).
 #   4. Any `first_active` / `firstActive`-style identifier in code, ANY case.
 #      Added 2026-08-04. Checks 1 and 2 are case-sensitive on two exact
 #      literals, so the const form §2.3.11.4 once suggested —
@@ -33,6 +36,11 @@
 #   * `git push --no-verify` bypasses this hook entirely.
 #   * It does nothing in a clone where core.hooksPath was never set.
 #   * It scans the pushed tip tree, not every commit in the range.
+#   * Checks 2 and 4 scan *.go INCLUDING COMMENTS, so Go source may not spell
+#     the gated identifier even in prose. Found 2026-09-04: a new test file
+#     whose doc comment named it made the hook refuse every push, clean tree and
+#     all. Documentation of the boundary belongs in FORK-NOTICE.md and in this
+#     header, which are out of scope by design.
 # It is a speed bump against accident, NOT a control against intent. The real
 # gate is the push-review rule in FORK-NOTICE.md, the FIRST_ACTIVE review
 # checklist R1-R16, and owner approval.
@@ -47,8 +55,31 @@
 #                                                    (was ALLOWED before check 4)
 #   I5  const enableShaping = false       (Go)    -> ALLOWED. Not a bug; the
 #                                                    documented class limit above.
+# Re-run 2026-09-04 against check 3's positive rewrite (review finding MAP-13),
+# same method: each injection committed on a throwaway branch in a scratch
+# CLONE of this repo, the hook driven with a ref line on stdin, nothing pushed.
+#   clean tip                                     -> exit 0, allowed   (correct)
+#   I3  HEAD_INTENT_STATE_ACTIVE = 9      (proto) -> REFUSED (still)
+#   I6  HEAD_INTENT_STATE_ACTIVE_OUTPUT = 9       -> REFUSED. Was ALLOWED by the
+#                                                    old negative regex, which
+#                                                    matched only the bare
+#                                                    identifier.
+#   I7  ACTIVE_LOG_ONLY renamed, still = 8        -> REFUSED (value 8 must carry
+#                                                    that name)
+#   I8  a tenth value at = 9, neutral name        -> REFUSED (the enum must end
+#                                                    at 8). Was ALLOWED before.
+#   I9  the enum block deleted outright           -> REFUSED (the check cannot
+#                                                    run, so the push is not
+#                                                    reviewable by it)
+#   I10 a COMMENT naming ACTIVE_OUTPUT            -> ALLOWED. Comments are
+#                                                    stripped before matching;
+#                                                    prose is not a contract.
 # False-positive surface of check 4, measured over the in-scope globs at
-# 9ba6e06 (120 .go, 2 .proto, 3 .sh, 8 .yaml, no vendor/): ZERO hits. Tree-wide
+# 9ba6e06 (120 .go, 2 .proto, 2 .sh, 8 .yaml, no vendor/): ZERO hits. The .sh
+# count was published as 3 and was wrong (review finding MAP-16): that tree
+# holds exactly two, build-raspbian32-linux-armhf.sh and pkg/proto/generate.sh.
+# Re-measured 2026-09-04 on the tree this commit lands in (150 .go, 2 .proto,
+# 2 .sh, 9 .yaml, no vendor/): still ZERO hits. Tree-wide
 # only FORK-NOTICE.md and this file match, and neither is in scope — the globs
 # are code-only, `.md` is not listed and `pre-push` is not `*.sh`. Prose that
 # documents the boundary by name stays exempt BY SCOPE; do not widen the globs
@@ -64,6 +95,70 @@ forbid() {
 	printf '\nIf this is a reviewed, approved push, bypass deliberately:\n' >&2
 	printf '   git push --no-verify\n\n' >&2
 	exit 1
+}
+
+# assert_head_intent_enum reads a .proto on stdin and checks the HeadIntentState
+# enum block positively. It prints a reason and exits 1 when the shape is wrong,
+# and exits 0 silently when it is right. W17 fork addition (review finding
+# MAP-13, owner decision D8).
+#
+# WHY POSITIVE. The contract this hook exists to protect is not "the string
+# HEAD_INTENT_STATE_ACTIVE is absent"; it is "the head-intent enum has no state
+# above ACTIVE_LOG_ONLY = 8", i.e. no state that could mean OUTPUT. A negative
+# regex can only refuse the names someone thought of. Enumerating what the block
+# must contain refuses everything else by construction -- an added value, a
+# renamed maximum, a duplicate number, a gap.
+#
+# It is still only a speed bump (see HONEST LIMITS): it reads the proto, not the
+# generated Go, and pkg/server's TestHeadIntentEnumStopsAtActiveLogOnly is the
+# check that runs on every `go test`, on every branch, hook or no hook.
+assert_head_intent_enum() {
+	awk '
+		/^[[:space:]]*enum[[:space:]]+HeadIntentState[[:space:]]*\{/ { inside = 1; next }
+		inside && /^[[:space:]]*\}/ { inside = 0; next }
+		inside {
+			line = $0
+			sub(/\/\/.*$/, "", line)
+			if (line ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*[0-9]+[[:space:]]*;/) {
+				name = line
+				sub(/^[[:space:]]*/, "", name)
+				sub(/[[:space:]]*=.*$/, "", name)
+				value = line
+				sub(/^[^=]*=[[:space:]]*/, "", value)
+				sub(/[^0-9].*$/, "", value)
+
+				count++
+				if (seen[value] != "") {
+					print "value " value " is declared twice (" seen[value] " and " name ")"
+					exit 1
+				}
+				seen[value] = name
+				if (value + 0 > max) { max = value + 0 }
+				# ACTIVE as a WHOLE underscore-separated token. A plain
+				# substring test would refuse HEAD_INTENT_STATE_INACTIVE = 6,
+				# which is the opposite of an active state and is in the enum
+				# today. TestTheActiveTokenRuleIsNotASubstringMatch in
+				# pkg/server pins the same distinction in Go.
+				if (("_" name "_") ~ /_ACTIVE_/ && name != "HEAD_INTENT_STATE_ACTIVE_LOG_ONLY") {
+					print "the enum declares " name " -- ACTIVE_LOG_ONLY is the only ACTIVE state this fork may publish"
+					exit 1
+				}
+			}
+		}
+		END {
+			if (count == 0) { print "the HeadIntentState enum block has no values"; exit 1 }
+			if (max != 8) { print "the enum reaches " max ", not 8 -- a state above ACTIVE_LOG_ONLY can only mean OUTPUT"; exit 1 }
+			if (count != 9) { print "the enum declares " count " values, want exactly 9 (0..8)"; exit 1 }
+			for (i = 0; i <= 8; i++) {
+				if (seen[i] == "") { print "the enum has no value " i; exit 1 }
+			}
+			if (seen[8] != "HEAD_INTENT_STATE_ACTIVE_LOG_ONLY") {
+				print "value 8 is named " seen[8] ", want HEAD_INTENT_STATE_ACTIVE_LOG_ONLY"
+				exit 1
+			}
+			exit 0
+		}
+	'
 }
 
 while read -r _local_ref local_sha _remote_ref _remote_sha; do
@@ -86,9 +181,21 @@ while read -r _local_ref local_sha _remote_ref _remote_sha; do
 		forbid "a FIRST_ACTIVE identifier is present in Go or proto source" "$local_sha"
 	fi
 
-	# An ACTIVE enum value that is not ACTIVE_LOG_ONLY means an output state exists.
-	if git grep -I -l -E 'HEAD_INTENT_STATE_ACTIVE([^_]|$)' "$local_sha" -- '*.proto' >/dev/null 2>&1; then
-		forbid "the proto declares an active head-intent enum value (must end at ACTIVE_LOG_ONLY = 8)" "$local_sha"
+	# Check 3, POSITIVE (rewritten 2026-09-04, review finding MAP-13). It used
+	# to be the negative regex `HEAD_INTENT_STATE_ACTIVE([^_]|$)`, which refuses
+	# only the BARE identifier -- so HEAD_INTENT_STATE_ACTIVE_OUTPUT = 9, or a
+	# ninth value under any other name, passed clean. It now extracts the enum
+	# and asserts its exact shape: values 0..8, each exactly once, the maximum
+	# named HEAD_INTENT_STATE_ACTIVE_LOG_ONLY, and no other name containing
+	# ACTIVE. See assert_head_intent_enum.
+	enum_seen=0
+	for proto in $(git grep -I -l -e 'enum HeadIntentState' "$local_sha" -- '*.proto' 2>/dev/null | sed 's/^[^:]*://'); do
+		enum_seen=1
+		reason=$(git show "$local_sha:$proto" | assert_head_intent_enum) || \
+			forbid "$proto: $reason" "$local_sha"
+	done
+	if [ "$enum_seen" -eq 0 ]; then
+		forbid "no .proto in the pushed tree declares 'enum HeadIntentState' -- the check that the head-intent contract still ends at ACTIVE_LOG_ONLY = 8 cannot run, so this push is not reviewable by it" "$local_sha"
 	fi
 
 	# Catch-all for the NAME, any case and with or without the underscore:
