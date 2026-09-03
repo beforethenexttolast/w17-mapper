@@ -18,6 +18,7 @@ import (
 	"github.com/kaack/elrs-joystick-control/webapp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
+	"io"
 	"os"
 	"os/signal"
 	"strconv"
@@ -103,7 +104,27 @@ func main() {
 	flag.IntVar(headTrackPort, "headtrack-port", hi.DefaultPort,
 		"UDP port for the LOG-ONLY head-intent receiver (only used with -headtrack-ingest)")
 
+	// W17 owned-fork addition (review finding MAP-9): print what a person
+	// filling in the shipped profile needs, and exit.
+	listDevices := new(bool)
+	flag.BoolVar(listDevices, "list-devices", false,
+		"print the attached gamepads (id, name, GUID, bus) and serial ports as JSON, then exit")
+
 	flag.Parse()
+
+	// W17 owned-fork addition (MAP-9). This runs FIRST, before any controller,
+	// listener or web bundle is touched: the two REPLACE-WITH-* values in
+	// configs/w17-ds4.json are machine-specific, the load path now refuses a
+	// profile that still carries them, and reading them used to mean opening the
+	// node-graph web UI -- the hobbyist step this product removes. It opens no
+	// serial port, binds nothing and starts nothing.
+	if *listDevices {
+		if err := printDeviceInventory(os.Stdout); err != nil {
+			fmt.Printf("\ncould not list the attached devices: %s\n\n", err.Error())
+			exitCode = 1
+		}
+		return
+	}
 
 	// -bind-all wins over -bind-host: an empty host is what net.JoinHostPort
 	// renders as ":port", i.e. every interface.
@@ -193,7 +214,12 @@ func main() {
 	}
 
 	go func() {
-		sigChan := make(chan os.Signal)
+		// Buffered: signal.Notify NEVER blocks, so a signal delivered before
+		// this goroutine reaches the receive would be dropped on an unbuffered
+		// channel and Ctrl-C would do nothing. `go vet` reports the unbuffered
+		// form as "misuse of unbuffered os.Signal channel"; it was the one
+		// finding vet had on this tree (review note N11, routed here).
+		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, os.Interrupt)
 		<-sigChan
 		fmt.Println("Ctrl-C detected, exiting")
@@ -206,4 +232,36 @@ func main() {
 	}()
 
 	serverCtl.Wait()
+}
+
+// printDeviceInventory writes the -list-devices document. W17 fork addition
+// (review finding MAP-9).
+//
+// The two halves come from the same places the running mapper reads them: the
+// gamepad ids are derived by devices.DeriveGamepadId, exactly as the registry
+// derives them, and the ports come from the same enumerator the GetTransmitters
+// RPC uses. Neither opens a port.
+func printDeviceInventory(w io.Writer) error {
+	gamepads, err := dc.GamepadInventory()
+	if err != nil {
+		return err
+	}
+
+	serialCtl := sc.NewCtl()
+	defer serialCtl.Quit()
+
+	ports, err := serialCtl.GetSerialPorts()
+	if err != nil {
+		return err
+	}
+
+	inventory := dc.Inventory{Gamepads: gamepads}
+	for _, port := range ports {
+		inventory.SerialPorts = append(inventory.SerialPorts, dc.SerialPortInfo{
+			Name:    port.Name,
+			Product: port.Product,
+		})
+	}
+
+	return inventory.WriteJSON(w)
 }
