@@ -132,8 +132,10 @@ func TestAReconnectedGamepadResolvesUnderTheSameId(t *testing.T) {
 		t.Fatalf("the pad still resolves after JOYDEVICEREMOVED -- the eval path would "+
 			"keep reading frozen values off a detached handle (id %s)", padID())
 	}
-	if got := firstJoy.closes.Load(); got != 1 {
-		t.Errorf("the removed pad's SDL handle was closed %d times, want exactly 1", got)
+	if got := firstJoy.closes.Load(); got != 0 {
+		t.Errorf("the removed pad's SDL handle was closed at removal (%d times) -- see "+
+			"deviceRemoved: a reader that already holds the pointer would be reading "+
+			"freed memory", got)
 	}
 
 	c.handleDeviceEvent(added(0))
@@ -164,8 +166,48 @@ func TestARemovedPadLeavesTheRegistryEmpty(t *testing.T) {
 	if got := len(c.GamepadList()); got != 0 {
 		t.Errorf("registry holds %d devices after the only one was removed, want 0", got)
 	}
+
+	// Retired, not closed: a pointer already handed to the eval path or to a
+	// GetGamepadStream RPC has to stay valid. Reads on it report the frozen last
+	// values and Attached() reports false, which is the state the eval path
+	// already neutralizes.
+	if got := joy.closes.Load(); got != 0 {
+		t.Errorf("the handle was closed %d times at removal, want 0", got)
+	}
+	if got := len(c.retiredList()); got != 1 {
+		t.Fatalf("%d retired handles, want 1 -- the handle leaked instead of being "+
+			"held for shutdown", got)
+	}
+
+	// ...and released exactly once when the controller shuts down.
+	c.closeAllDevices()
 	if got := joy.closes.Load(); got != 1 {
-		t.Errorf("close count %d, want 1", got)
+		t.Errorf("shutdown closed the retired handle %d times, want 1", got)
+	}
+}
+
+// TestShutdownClosesTheLiveAndTheRetiredHandles pins the other half: retiring
+// must not turn into leaking. Everything the controller ever opened is released
+// exactly once when it shuts down.
+func TestShutdownClosesTheLiveAndTheRetiredHandles(t *testing.T) {
+	gone, goneJoy := newFakePad(40)
+	live, liveJoy := newFakePad(41)
+
+	c := &Controller{Gamepads: map[string]*InputGamepad{gone.Id: gone}}
+	c.handleDeviceEvent(removed(40))
+
+	live.Id = padID() + "_live"
+	c.mu.Lock()
+	c.Gamepads[live.Id] = live
+	c.mu.Unlock()
+
+	c.closeAllDevices()
+
+	if got := goneJoy.closes.Load(); got != 1 {
+		t.Errorf("the unplugged pad's handle was closed %d times at shutdown, want 1", got)
+	}
+	if got := liveJoy.closes.Load(); got != 1 {
+		t.Errorf("the still-attached pad's handle was closed %d times at shutdown, want 1", got)
 	}
 }
 
@@ -181,6 +223,9 @@ func TestARemovalForAnUnknownInstanceChangesNothing(t *testing.T) {
 
 	if _, ok := c.Gamepad(padID()); !ok {
 		t.Errorf("an unrelated removal dropped the wrong device")
+	}
+	if got := len(c.retiredList()); got != 0 {
+		t.Errorf("an unrelated removal retired %d handles", got)
 	}
 	if got := joy.closes.Load(); got != 0 {
 		t.Errorf("an unrelated removal closed the wrong handle (%d closes)", got)

@@ -35,6 +35,10 @@ type Controller struct {
 	DeviceEventCount int32
 	DeviceEventChan  chan int32
 
+	// retired holds the handles of devices that have been unplugged. They are
+	// closed by Quit, not at removal: see deviceRemoved for why. Guarded by mu.
+	retired []*InputGamepad
+
 	// pump and opener are the two SDL seams the hot-plug tests replace; nil
 	// means the real SDL queue and SDL_JoystickOpen. See hotplug.go.
 	pump   eventPump
@@ -62,6 +66,29 @@ func (c *Controller) Gamepad(id string) (*InputGamepad, bool) {
 
 	res, ok := c.Gamepads[id]
 	return res, ok
+}
+
+// closeAllDevices releases every SDL handle this controller owns: everything
+// still registered, plus every handle retired by an unplug during the session.
+// deviceRemoved keeps those alive so that a pointer already handed out stays
+// valid; this is where they are finally released.
+//
+// Separated from Quit so it can be tested without SDL.
+func (c *Controller) closeAllDevices() {
+	for _, device := range c.GamepadList() {
+		device.Close()
+	}
+	for _, device := range c.retiredList() {
+		device.Close()
+	}
+}
+
+// retiredList is a snapshot of the handles unplugged during this session.
+func (c *Controller) retiredList() []*InputGamepad {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return append([]*InputGamepad(nil), c.retired...)
 }
 
 // GamepadList is a snapshot of the registry for callers that want all of it.
@@ -96,9 +123,7 @@ func (c *Controller) Quit() {
 		fmt.Printf("error stopping polling loop. %s", err.Error())
 	}
 
-	for _, device := range c.GamepadList() {
-		device.Close()
-	}
+	c.closeAllDevices()
 	sdl.Quit()
 }
 

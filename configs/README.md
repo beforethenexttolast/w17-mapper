@@ -343,10 +343,14 @@ message says so.
 The registry used to be enumerated once at start-up and every SDL event body was
 thrown away, so a pad that dropped and came back never resolved again and the
 only cure was restarting the drive program. The poll loop now handles
-`JOYDEVICEADDED` / `JOYDEVICEREMOVED`: a removal closes the handle and drops the
-entry (inputs go to their failsafes, arm to the 172 rail), and the pad that
-comes back is opened and registered under **the same id**, because the id is
-derived from the GUID and the name and neither changes across an unplug.
+`JOYDEVICEADDED` / `JOYDEVICEREMOVED`: a removal drops the entry immediately, so
+the id stops resolving and every input on that pad goes to its failsafe (arm to
+the 172 rail), and the pad that comes back is opened and registered under **the
+same id**, because the id is derived from the GUID and the name and neither
+changes across an unplug. The unplugged pad's SDL handle is *retired*, not
+closed, and released at shutdown: readers hold the pointer outside the registry
+lock, so closing it at the moment of the unplug would be a use-after-free on a
+live drive. That costs one handle per unplug for the length of the session.
 
 Two things do not change, and both are deliberate:
 

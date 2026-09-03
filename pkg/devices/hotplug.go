@@ -136,7 +136,29 @@ func (c *Controller) deviceAdded(deviceIndex int) {
 	fmt.Printf("(devices): gamepad connected: %s (id %s)\n", device.Name, id)
 }
 
-// deviceRemoved closes and drops the entry whose SDL instance id matches.
+// deviceRemoved drops the entry whose SDL instance id matches, and RETIRES its
+// handle rather than closing it.
+//
+// Why it is not closed here. Every reader takes the registry lock only long
+// enough to fetch the *InputGamepad, then reads through it unlocked -- the eval
+// path does exactly that (config.GetInputGamepad -> Attached, then Axis/Button
+// on the way through the node graph), and the GetGamepadStream RPC holds the
+// same pointer for the whole life of the stream and reads axes every 25 ms.
+// Closing here frees the SDL_Joystick underneath all of them: SDL validates the
+// pointer before using it, so this is not a crash so much as a read of freed
+// memory, but it is a genuine use-after-free and the poll goroutine would be
+// creating it at an arbitrary instant, mid-drive, on a physical unplug.
+//
+// The cost of retiring instead is one SDL_Joystick object -- and the OS device
+// handle behind it -- per unplug, held until Quit. That is a bounded leak on a
+// path that happens a handful of times in a session, and it buys the guarantee
+// that a pointer already handed out stays valid: reads on it report the frozen
+// last values and Attached() reports FALSE, which is the state device.go's
+// Attached() exists to describe and which the eval path already neutralizes.
+//
+// Dropping the map entry is what actually matters, and it happens immediately:
+// the id stops resolving, so nothing NEW can reach the dead device, and the
+// same id is free for the pad when it comes back.
 func (c *Controller) deviceRemoved(instance int32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -147,7 +169,7 @@ func (c *Controller) deviceRemoved(instance int32) {
 		}
 
 		delete(c.Gamepads, id)
-		device.Close()
+		c.retired = append(c.retired, device)
 		fmt.Printf("(devices): gamepad disconnected: %s (id %s)\n", device.Name, id)
 		return
 	}
