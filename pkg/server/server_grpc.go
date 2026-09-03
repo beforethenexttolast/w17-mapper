@@ -46,7 +46,10 @@ type GRPCServer struct {
 func (s *GRPCServer) GetGamepads(context.Context, *pb.Empty) (*pb.GetGamepadsRes, error) {
 
 	var res pb.GetGamepadsRes
-	for _, device := range s.DevicesCtl.Gamepads {
+	// W17 fork modification (MAP-6): a snapshot, not the live map. The poll
+	// goroutine now inserts and deletes entries as devices come and go, so
+	// ranging the field directly is a data race.
+	for _, device := range s.DevicesCtl.GamepadList() {
 		var (
 			protoDevice pb.Gamepad
 			deviceJson  []byte

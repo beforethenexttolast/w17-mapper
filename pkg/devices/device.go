@@ -10,11 +10,35 @@ import (
 	"github.com/veandco/go-sdl2/sdl"
 )
 
+// Joystick is the part of *sdl.Joystick an InputGamepad reads through.
+// W17 fork addition (branch B, review finding MAP-6).
+//
+// *sdl.Joystick satisfies it as-is; nothing about the production path changes.
+// It exists so that hot-plug -- a device leaving the registry and coming back --
+// can be tested at all. An sdl.Joystick is an opaque C handle that only
+// SDL_JoystickOpen can produce, so without this seam every gamepad in a test is
+// necessarily DETACHED, and the half of MAP-6 that matters ("the pad works
+// again after it comes back") could not be asserted anywhere.
+//
+// Keep it to what InputGamepad actually calls. It is not an abstraction over
+// SDL; it is the list of methods this type depends on.
+type Joystick interface {
+	Attached() bool
+	Axis(axis int) int16
+	Button(button int) byte
+	Hat(hat int) byte
+	NumAxes() int
+	NumButtons() int
+	NumHats() int
+	InstanceID() sdl.JoystickID
+	Close()
+}
+
 type InputGamepad struct {
 	Id   string `json:"id"`
 	Name string `json:"name"`
 
-	Joy *sdl.Joystick `json:"-"`
+	Joy Joystick `json:"-"`
 }
 
 // Attached reports whether this gamepad's SDL handle still refers to a present
@@ -84,11 +108,28 @@ func (d *InputGamepad) HatDirection(hat int, direction uint8) util.RawValue {
 	return DecodeHatDirection(d.Joy.Hat(hat), direction)
 }
 
+// Close releases the SDL handle. W17 fork modification (MAP-6): nil-safe,
+// because the registry is now pruned on removal and Quit walks whatever is
+// left, which may include an entry whose handle was already surrendered.
 func (d *InputGamepad) Close() {
+	if d.Joy == nil {
+		return
+	}
 	d.Joy.Close()
 }
 
+// InstanceId is the SDL instance id -- the identity a JOYDEVICEREMOVED event
+// carries, and therefore how a removal is matched to a registry entry. It is
+// NOT the config-level device id (see DeriveGamepadId): SDL assigns a fresh
+// instance id every time the same physical pad is plugged in, which is exactly
+// why the removal path matches on it and the resolution path does not.
+//
+// W17 fork modification (MAP-6): nil-safe, reporting -1 -- an id SDL never
+// issues -- for a gamepad with no handle.
 func (d *InputGamepad) InstanceId() int32 {
+	if d.Joy == nil {
+		return -1
+	}
 	return int32(d.Joy.InstanceID())
 }
 func (d *InputGamepad) Axes() int32 {

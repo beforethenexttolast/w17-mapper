@@ -26,8 +26,12 @@ type Config struct {
 func (c *Config) GetInputGamepad(deviceId string) (*devices.InputGamepad, bool) {
 	var ok bool
 
+	// W17 fork modification (MAP-6): resolve through the accessor, not the map
+	// field. The registry is mutated by the poll goroutine now -- a hot-plug
+	// removes the entry outright -- so an unguarded map read here would be a
+	// data race against a device being unplugged mid-drive.
 	var res *devices.InputGamepad
-	if res, ok = c.Ctl.deviceCtl.Gamepads[deviceId]; !ok {
+	if res, ok = c.Ctl.deviceCtl.Gamepad(deviceId); !ok {
 		return nil, false
 	}
 
