@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/kaack/elrs-joystick-control/pkg/util"
 )
@@ -53,6 +54,11 @@ var w17SwitchChannels = map[int32]string{
 // produces. The teeth for the W17 profile live in the test that loads the
 // committed configs/w17-ds4.json and requires ZERO findings -- the shipped
 // profile cannot drift into a warning without failing the suite.
+//
+// W17 fork modification (review finding MAP-12, owner decision OD-9/D2(a)): a
+// config that declares the W17 marker is additionally checked for the ARM-CHAIN
+// SHAPE, and those findings are FATAL at the load path rather than advisory.
+// See LintW17ArmChain.
 func LintConfig(c *Config) []string {
 	if c == nil || c.IOMap == nil {
 		return nil
@@ -64,6 +70,12 @@ func LintConfig(c *Config) []string {
 			findings = append(findings, lintChannel(ch)...)
 		}
 	}
+
+	// Only for a file that claims to be the W17 profile. An upstream rig is
+	// entitled to use channel 5 for anything it likes, and warning it about an
+	// arm-gate shape it never asked for is exactly the crying-wolf that teaches
+	// people to ignore the lint.
+	findings = append(findings, LintW17ArmChain(c)...)
 
 	// The IOMap walk order is nondeterministic; sorted findings keep logs and
 	// tests stable.
@@ -147,4 +159,162 @@ func effectiveRaw(v *util.RawValue, fallback util.RawValue) util.RawValue {
 		return fallback
 	}
 	return *v
+}
+
+// w17ArmChannel is the channel the control firmware decodes as ARM.
+const w17ArmChannel = int32(5)
+
+// LintW17ArmChain reports every way a W17-marked config's arm chain departs
+// from the shape that keeps the car from arming itself. It returns nothing for
+// a config that does not declare the marker. W17 fork addition (review finding
+// MAP-12, owner decision OD-9/D2(a)).
+//
+// WHY THIS MOVED OUT OF A TEST. The shape was asserted only in
+// w17_profile_test.go, against the copy of configs/w17-ds4.json in THIS REPO.
+// Race day does not load that copy: it loads a hand-edited file at an absolute
+// path on the giftee's PC, with the two placeholders filled in by hand. Every
+// layer between the two -- the schema, the read-cycle check, the endpoint lint
+// -- accepts an arm chain with the safety shape edited away, because
+// `reset_on_nan` defaults to false (pkg/config/schema.yaml) and a bare seq is
+// perfectly valid. So the one property whose absence produced review blocker
+// F2 (a gamepad dropout leaving the toggle ARMED, and the auto-reconnect
+// re-arming the car with zero user input) was pinned everywhere except where it
+// is actually used.
+//
+// THE SHAPE, and what each part is for:
+//
+//	channel 5  <-  and( seq{ output_values[0] == 0,
+//	                         explicit traversal_method,
+//	                         reset_on_nan },
+//	                    <non-empty right side> )
+//
+// Each part carries its own weight:
+//
+//   - the `and` with a non-empty RIGHT side is the liveness gate. A naked seq
+//     HOLDS its value when its conditions go nan, so a dropout would keep
+//     transmitting "armed"; a device-fed probe on the RIGHT makes the whole
+//     node nan when the pad goes away, which the channel turns into its 172
+//     failsafe. It has to be the right side: an `and` SWALLOWS a nan left
+//     operand (see input_and.go's note).
+//   - output_values[0] == 0 is "boots disarmed", and it is also where
+//     reset_on_nan sends the toggle.
+//   - an explicit traversal_method, because without one seq.NextValue always
+//     returns the first element and the toggle is dead -- which fails safe, but
+//     silently, and the car simply never arms.
+//   - reset_on_nan is F2 itself.
+//
+// The findings are returned in a fixed order so the refusal sentence reads the
+// same way twice.
+func LintW17ArmChain(c *Config) []string {
+	if !c.IsW17Profile() || c.IOMap == nil {
+		return nil
+	}
+
+	var arms []*InputChannel
+	for _, ih := range c.IOMap {
+		for _, ch := range collectChannels(ih) {
+			if ch.Channel.Number == w17ArmChannel {
+				arms = append(arms, ch)
+			}
+		}
+	}
+
+	switch len(arms) {
+	case 0:
+		return []string{fmt.Sprintf(
+			"no arm channel: a W17 profile must drive channel %d, the firmware's arm switch",
+			w17ArmChannel)}
+	case 1:
+	default:
+		return []string{fmt.Sprintf(
+			"%d channel nodes drive channel %d: which one arms the car is decided by "+
+				"map iteration order, so the arm chain cannot be checked at all",
+			len(arms), w17ArmChannel)}
+	}
+
+	arm := arms[0]
+	if arm.Channel.Input == nil || arm.Channel.Input.IO == nil {
+		return []string{fmt.Sprintf(
+			"the arm channel (ch%d) has no input: it would sit on its failsafe forever",
+			w17ArmChannel)}
+	}
+
+	gate, ok := arm.Channel.Input.IO.(*InputAnd)
+	if !ok {
+		return []string{fmt.Sprintf(
+			"the arm channel (ch%d) is fed by a %q node, not the liveness-gating `and` -- "+
+				"without the gate the toggle HOLDS \"armed\" through a gamepad dropout",
+			w17ArmChannel, arm.Channel.Input.IO.InputType())}
+	}
+
+	var findings []string
+
+	if gate.And.Right == nil || len(*gate.And.Right) == 0 {
+		findings = append(findings, "the arm gate has no liveness probe on its right side -- "+
+			"nothing makes the gate nan when the gamepad goes away, so the toggle keeps "+
+			"transmitting whatever it held")
+	}
+
+	if gate.And.Left == nil || gate.And.Left.IO == nil {
+		findings = append(findings, "the arm gate has no toggle on its left side")
+		return findings
+	}
+
+	seq, ok := gate.And.Left.IO.(*InputSeq)
+	if !ok {
+		findings = append(findings, fmt.Sprintf(
+			"the arm gate's left side is a %q node, not the seq toggle",
+			gate.And.Left.IO.InputType()))
+		return findings
+	}
+
+	if seq.Seq.OutputValues == nil || len(*seq.Seq.OutputValues) != 2 {
+		findings = append(findings, fmt.Sprintf(
+			"the arm toggle has %d output values, want exactly 2 (disarmed, armed)",
+			len(derefValues(seq.Seq.OutputValues))))
+	} else if (*seq.Seq.OutputValues)[0] != 0 {
+		findings = append(findings, fmt.Sprintf(
+			"the arm toggle does not boot disarmed: output_values[0] = %d, want 0",
+			(*seq.Seq.OutputValues)[0]))
+	}
+
+	if !seq.Seq.TraversalMethod.IsValid() {
+		findings = append(findings, "the arm toggle has no explicit traversal_method -- "+
+			"seq.NextValue then always returns the first element and the toggle is dead, "+
+			"so the car can never arm")
+	}
+
+	if !seq.Seq.ResetOnNaN {
+		findings = append(findings, "the arm toggle does not set reset_on_nan -- the toggle "+
+			"HOLDS armed through a gamepad dropout, and the pad's auto-reconnect re-arms "+
+			"the car with zero user input (review blocker F2)")
+	}
+
+	return findings
+}
+
+func derefValues(v *[]util.RawValue) []util.RawValue {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+// W17ArmChainRefusal is the plain-language sentence the load path shows when a
+// W17-marked profile fails LintW17ArmChain. W17 fork addition (MAP-12).
+//
+// It names the marker, because the marker is what turned advice into a refusal:
+// the person reading it may have copied the W17 profile as a starting point for
+// something else, and the fix in that case is to drop the marker, not to
+// reshape the graph.
+func W17ArmChainRefusal(findings []string) string {
+	if len(findings) == 0 {
+		return ""
+	}
+
+	return fmt.Sprintf("this profile declares itself the W17 race-day profile "+
+		"(\"w17_profile\": true), so its arm chain has to be the shape that stops the car "+
+		"arming itself -- and it is not: %s. Either restore the arm chain (see "+
+		"configs/README.md) or, if this profile is for a different rig, remove the "+
+		"\"w17_profile\" marker.", strings.Join(findings, "; "))
 }

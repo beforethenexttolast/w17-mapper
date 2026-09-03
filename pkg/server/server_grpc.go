@@ -162,6 +162,25 @@ func (s *GRPCServer) SetConfig(_ context.Context, req *pb.SetConfigReq) (*pb.Emp
 		return nil, status.Error(codes.InvalidArgument, cc.PlaceholderRefusal(found))
 	}
 
+	// W17 fork addition (MAP-12, owner decision OD-9/D2(a)): a config that
+	// DECLARES ITSELF the W17 race-day profile is held to the arm-chain shape,
+	// and failing it is a refusal rather than a warning.
+	//
+	// The shape used to be pinned only by a test, against the copy of
+	// configs/w17-ds4.json in the repo -- while race day loads a hand-edited
+	// file from an absolute path on the giftee's PC. A copy with reset_on_nan
+	// edited away is schema-valid (the field defaults to false) and passes every
+	// other layer, so review blocker F2 could walk straight back in on the only
+	// file that matters. This runs before the config is applied, so a profile
+	// with a broken arm chain never becomes live.
+	//
+	// It is gated on the marker so upstream rigs are untouched: they may use
+	// channel 5 for anything, and a fork that refused their configs would be a
+	// fork nobody could use.
+	if findings := cc.LintW17ArmChain(tmp.Config); len(findings) != 0 {
+		return nil, status.Error(codes.InvalidArgument, cc.W17ArmChainRefusal(findings))
+	}
+
 	// W17 fork addition: plausibility lint, warnings only -- non-W17 rigs must
 	// keep loading. The committed W17 profile is held to zero findings by its
 	// own test. See config.LintConfig.

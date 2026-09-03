@@ -92,6 +92,37 @@ func TestW17ProfileValidatesAndLintsClean(t *testing.T) {
 	}
 }
 
+// TestW17ProfileDeclaresTheW17Marker (review finding MAP-12, owner decision
+// OD-9/D2(a)). The marker is what turns the arm-chain shape from a test that
+// runs here into a REFUSAL on the file race day loads, so losing it would
+// silently disarm every check in lint_armchain_test.go for the only copy that
+// matters -- and this suite would go on passing, because it reads this copy.
+func TestW17ProfileDeclaresTheW17Marker(t *testing.T) {
+	cfg, raw := loadW17Profile(t)
+
+	if !cfg.IsW17Profile() {
+		t.Error("the shipped profile does not set \"w17_profile\": true, so the arm-chain " +
+			"shape is advisory rather than fatal on the giftee's hand-edited copy")
+	}
+
+	// Through the document too, since that is what the marker has to survive:
+	// the bring-up unwraps the top-level "config" and sends only the inner
+	// object, so the marker has to be INSIDE it.
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	inner, ok := doc["config"].(map[string]any)
+	if !ok {
+		t.Fatal("setup: no config object")
+	}
+	if marker, ok := inner["w17_profile"].(bool); !ok || !marker {
+		t.Errorf("the marker must live inside the config object (found %v) -- a sibling "+
+			"key never reaches the server, because the bring-up unwraps \"config\"",
+			inner["w17_profile"])
+	}
+}
+
 // TestW17ProfileShipsBothPlaceholders is the anti-leak pin (MAP-5). The two
 // machine-specific values MUST still be placeholders in the committed file:
 // a bench-filled copy pushed by accident would ship one operator's COM port

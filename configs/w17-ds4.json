@@ -1,5 +1,6 @@
 {
   "config": {
+    "w17_profile": true,
     "input_output_map": {
       "w17-tx": {
         "id": "w17-tx",
