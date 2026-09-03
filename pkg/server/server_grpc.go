@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
+	"reflect"
 	"time"
 )
 
@@ -31,7 +32,9 @@ type GRPCServer struct {
 	LinkCtl    *lc.Controller
 	// HTTPCtl is the web-UI lifecycle, as an interface -- see HTTPController.
 	// It is nil in tests that exercise only the config/link RPCs; the two HTTP
-	// RPCs report Unavailable rather than panicking in that case.
+	// RPCs report Unavailable rather than panicking in that case. Read it
+	// through httpController(), which also catches a TYPED nil (review finding
+	// N4).
 	HTTPCtl HTTPController
 	// HeadIntent is the read-only, LOG-ONLY head-intent diagnostics source. It is
 	// nil unless the mapper was started with -headtrack-ingest; when nil the
@@ -168,21 +171,51 @@ func (s *GRPCServer) SetConfig(_ context.Context, req *pb.SetConfigReq) (*pb.Emp
 	return &pb.Empty{}, nil
 }
 
-func (s *GRPCServer) StartHTTP(context.Context, *pb.Empty) (*pb.Empty, error) {
+// httpController returns the web-UI lifecycle if there really is one.
+// W17 fork addition (review finding N4).
+//
+// `s.HTTPCtl == nil` is NOT the whole question. HTTPCtl is an interface, and an
+// interface holding a TYPED nil pointer -- (*http.Controller)(nil), which is
+// what a caller that built its controller conditionally would hand over -- is
+// itself non-nil. The plain comparison therefore passes and Start()/Stop() are
+// called on a nil receiver, which panics inside a gRPC handler.
+//
+// Not reachable from the shipped binary: main always constructs a real
+// controller before calling server.NewCtl. This guards the next caller, and
+// the build-graph change that made HTTPCtl an interface in the first place is
+// exactly what created the shape.
+func (s *GRPCServer) httpController() (HTTPController, bool) {
 	if s.HTTPCtl == nil {
+		return nil, false
+	}
+
+	// reflect rather than a type switch on *http.Controller: pkg/server
+	// deliberately does not import pkg/http (see HTTPController), and a type
+	// switch would have to be extended for every future implementation.
+	if v := reflect.ValueOf(s.HTTPCtl); v.Kind() == reflect.Ptr && v.IsNil() {
+		return nil, false
+	}
+
+	return s.HTTPCtl, true
+}
+
+func (s *GRPCServer) StartHTTP(context.Context, *pb.Empty) (*pb.Empty, error) {
+	httpCtl, ok := s.httpController()
+	if !ok {
 		return nil, status.Error(codes.Unavailable, "no web UI in this build")
 	}
-	if err := s.HTTPCtl.Start(); err != nil {
+	if err := httpCtl.Start(); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &pb.Empty{}, nil
 }
 
 func (s *GRPCServer) StopHTTP(context.Context, *pb.Empty) (*pb.Empty, error) {
-	if s.HTTPCtl == nil {
+	httpCtl, ok := s.httpController()
+	if !ok {
 		return nil, status.Error(codes.Unavailable, "no web UI in this build")
 	}
-	if err := s.HTTPCtl.Stop(); err != nil {
+	if err := httpCtl.Stop(); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 	return &pb.Empty{}, nil
