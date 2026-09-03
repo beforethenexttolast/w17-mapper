@@ -289,9 +289,9 @@ From GRPC-UI, you can call the methods exposed by the application's gRPC service
 * **getConfig** - Retrieves the full configuration from memory, and sends it as a JSON file
 
 * **startLink** - starts the link with the RF transmitter
-* **stopMixer** - stops the link with the RF transmitter
+* **stopLink** - stops the link with the RF transmitter
 
-* **startHttp** - Starts the Web-UI HTTP server
+* **startHTTP** - Starts the Web-UI HTTP server
 * **stopHTTP** - Stops the Web-UI HTTP server
 
 * **getGamepads** - Returns a list of raw input devices connected (joysticks, gamepads, etc)

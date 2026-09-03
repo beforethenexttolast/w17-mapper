@@ -14,8 +14,14 @@ package config
 //     decode as absent -- a default config cannot arm);
 //   - the OFF rail failsafe on every firmware decodeSwitch channel (defect 1:
 //     a center failsafe latches through the receiver's hysteresis);
-//   - SHARE (button 8), OPTIONS (button 9) and the D-pad UNBOUND -- reserved
-//     for the recorded head-tracking affordances (Alternative C).
+//   - SHARE (button 4), OPTIONS (button 6) and the D-pad UNBOUND -- reserved
+//     for the recorded head-tracking affordances (Alternative C). Those are the
+//     indices in the SDL HIDAPI GameController layout this profile binds, which
+//     is the layout w17ReservedButtons below pins; the same two physical buttons
+//     are 8 and 9 under the DirectInput fallback (see configs/README.md). This
+//     header said 8 and 9 while the code pinned 4 and 6 -- raw-HID numbers
+//     paired with HIDAPI numbers is exactly the confusion that produced review
+//     blocker F1, which this file exists to prevent (review finding MAP-15).
 
 import (
 	"encoding/json"

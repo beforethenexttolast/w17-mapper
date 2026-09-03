@@ -39,7 +39,9 @@ Bring-up happens in this exact order, and the order is load-bearing:
 1. the file's `{"config": …}` wrapper is unwrapped (the RPC carries the config
    *object*; the server re-wraps it before validating);
 2. any unfilled `REPLACE-WITH-*` placeholder is **refused**;
-3. only then is the link started — which is why the self-start can never open
+3. if the file declares `"w17_profile": true`, its **arm chain is checked and a
+   wrong shape is refused** (below);
+4. only then is the link started — which is why the self-start can never open
    the literal string `REPLACE-WITH-COM-PORT`.
 
 ### The two placeholders — and the refusal
@@ -48,8 +50,66 @@ Bring-up happens in this exact order, and the order is load-bearing:
 
 | Placeholder | Where | Replace with |
 |---|---|---|
-| `REPLACE-WITH-DS4-ID` | every `gamepad.id` | the pad's id from the mapper UI gamepad list (an md5-derived 6-char hash of the SDL GUID+name — device-specific, so it cannot be committed) |
-| `REPLACE-WITH-COM-PORT` | `tx.port` | the ELRS TX serial port (e.g. `COM5`) — this is also the port the link is started on, and it **must equal `-tx-serial-port-name`** if you pass that flag, or the send loop resolves no channels |
+| `REPLACE-WITH-DS4-ID` | every `gamepad.id` | the pad's id — six hex characters, printed by `-list-devices` (below) |
+| `REPLACE-WITH-COM-PORT` | `tx.port` | the ELRS TX serial port (e.g. `COM5`), also printed by `-list-devices` — this is the port the link is started on, and it **must equal `-tx-serial-port-name`** if you pass that flag, or the send loop resolves no channels |
+
+#### Reading both values: `-list-devices`
+
+```sh
+elrs-joystick-control -list-devices
+```
+
+Prints one JSON document and exits. It starts no server, binds no port and opens
+no serial port; it exists so the two values can be read without opening the
+node-graph editor, which is the hobbyist step this product removes.
+
+```json
+{
+  "gamepads": [
+    {
+      "id": "a1b2c3",
+      "name": "PS4 Controller",
+      "guid": "030000004c050000cc09000000006800",
+      "bus": "usb",
+      "axes": 6,
+      "buttons": 16,
+      "hats": 1
+    }
+  ],
+  "serial_ports": [
+    { "name": "COM5", "product": "USB Serial Device" }
+  ]
+}
+```
+
+`id` goes into every `gamepad.id`; `name` from `serial_ports` goes into
+`tx.port`. **COM numbering is assigned by this Windows machine** — the same
+adapter can be COM5 on one PC and COM12 on another, and moving it to a different
+USB socket can change it again. Both values are therefore per-PC, which is why
+they ship as placeholders (review finding MAP-9).
+
+#### How the gamepad id is derived, and when it changes
+
+The id is `md5("guid: <SDL GUID>, name: <name>")`, hex-encoded, sliced `[1:7]` —
+six hex characters starting at offset **1**, not 0 (`pkg/devices/util.go`,
+`DeriveGamepadId`). The odd offset is upstream's and is kept byte-for-byte,
+because every id already in a saved config was derived with it.
+`-list-devices` prints the GUID and the name it used, so the derivation can be
+checked by hand.
+
+Two consequences, and the second one is the trap:
+
+- **It survives an unplug.** The id is a function of the GUID and the name only,
+  so a pad that drops and reconnects derives the same id and the profile
+  resolves it again (review finding MAP-6). Nothing has to be re-filled.
+- **It does NOT survive a change of transport.** SDL encodes the bus in the
+  GUID's first field, so the same DualShock 4 has one id over USB and a
+  different one over Bluetooth. Fill the placeholder with the pad connected the
+  way it will be connected on race day, and if you later switch USB↔Bluetooth,
+  re-read it. The `bus` field in the output says which one you are looking at;
+  it is decoded from the GUID and is a hint, not an authority — the raw `guid`
+  beside it is the value that matters, and the decode is unverified on
+  Windows/HIDAPI (`[bench-TBD]`).
 
 **A profile with either placeholder still in it is REFUSED, not loaded**
 (owner decision OD-9/D3). Both load paths refuse it — the headless
@@ -229,6 +289,31 @@ CIRCLE (1), PS (5), L3/R3 (7/8), touchpad.
 
 ## The arm chain, and why it is not just a toggle
 
+**The shape below is enforced, not merely documented** (owner decision
+OD-9/D2(a), review finding MAP-12). `w17-ds4.json` declares itself with a
+marker:
+
+```json
+{ "config": { "w17_profile": true, "input_output_map": { … } } }
+```
+
+Any config carrying that marker is checked at load time — by the same
+`SetConfig` the editor and the headless bring-up both go through — and a wrong
+arm chain is **refused with the reason named**, not warned about:
+
+- channel 5 must exist, exactly once, and be fed by an `and`;
+- the `and` must have a non-empty right side (the liveness probe);
+- its left side must be a `seq` with exactly two output values, the first `0`;
+- that `seq` must set an explicit `traversal_method` and `reset_on_nan`.
+
+**Keep the marker on your filled copy.** It is what makes those rules apply to
+the file this machine actually loads: the shape used to be pinned only by a test
+against the copy in the repo, while race day loads a hand-edited one. Without
+the marker a copy that has lost `reset_on_nan` is schema-valid, cycle-free and
+lint-clean, and re-opens the silent-re-arm defect. Configs for **other** rigs
+must not carry the marker — nothing here applies to them, and the refusal
+message says so.
+
 `ch5 = and(seq-toggle{reset_on_nan}, liveness-probe)`:
 
 - the `seq` toggles 0/32767 on a deliberate TRIANGLE press-and-release
@@ -250,6 +335,31 @@ CIRCLE (1), PS (5), L3/R3 (7/8), touchpad.
   a nan LEFT operand and only an all-nan RIGHT side fails the node
   (`input_and.go`), so a device-fed probe on the LEFT would lose its failure
   signal. Do not flip that shape in a future profile without revisiting.
+
+## If the controller drops out mid-drive
+
+**Reconnect it. The mapper picks it up again** (review finding MAP-6).
+
+The registry used to be enumerated once at start-up and every SDL event body was
+thrown away, so a pad that dropped and came back never resolved again and the
+only cure was restarting the drive program. The poll loop now handles
+`JOYDEVICEADDED` / `JOYDEVICEREMOVED`: a removal closes the handle and drops the
+entry (inputs go to their failsafes, arm to the 172 rail), and the pad that
+comes back is opened and registered under **the same id**, because the id is
+derived from the GUID and the name and neither changes across an unplug.
+
+Two things do not change, and both are deliberate:
+
+- **The car does not re-arm by itself.** The dropout was still a dropout, so
+  `reset_on_nan` has already returned the toggle to DISARMED and a fresh
+  TRIANGLE press-and-release is required. Hot-plug restores control, not state.
+- **A change of transport is still a different id.** Reconnecting the same pad
+  over Bluetooth after filling the placeholder over USB gives a pad the profile
+  does not know; see the derivation note above.
+
+Not verified on hardware: that Windows HIDAPI raises these events for a DS4, and
+that the GUID after a re-plug is byte-identical, are read from SDL semantics and
+the code, not observed — `[bench-TBD]`.
 
 ## SDL layout — which one, and the bench check owed
 
