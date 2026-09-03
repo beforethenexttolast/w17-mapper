@@ -131,6 +131,26 @@ func Init(grpcHost, txServerPortName, configFilePath string, txServerPortBaudRat
 			return errors.New(cc.PlaceholderRefusal(found))
 		}
 
+		// W17 fork addition (owner ruling OD-9/D2 addendum, 2026-09-04): the
+		// HEADLESS bring-up refuses a profile that does not declare the W17
+		// marker, before the RPC.
+		//
+		// The arm-chain rules are fatal for a MARKED profile and silent for an
+		// unmarked one -- deliberately, because this fork still has to load
+		// other people's rigs. Independent review showed what that leaves open
+		// on the one path that matters: delete `"w17_profile": true` from the
+		// car's own filled profile and it loads with every arm-chain rule
+		// quiet, toggle able to re-arm itself after a dropout. Wording alone
+		// cannot close that; refusing the file here can.
+		//
+		// This is the RACE-DAY path (one whitelisted flag, one file, the car's
+		// own profile), which is why the refusal belongs here and not in
+		// SetConfig: the web editor is where an upstream rig's config is
+		// legitimately applied, and it stays permissive.
+		if !cc.DeclaresW17Marker(doc) {
+			return errors.New(cc.W17MarkerRefusal(configFilePath))
+		}
+
 		if res, err = client.SetConfig(ctx, &pb.SetConfigReq{Config: payload}); err != nil {
 			return fmt.Errorf("the saved profile %s was refused: %w", configFilePath, err)
 		}

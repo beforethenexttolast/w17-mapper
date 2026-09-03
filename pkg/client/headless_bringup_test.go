@@ -82,6 +82,31 @@ func filledProfile(t *testing.T) string {
 	return path
 }
 
+// unmarkedFilledProfile is the filled profile with its `"w17_profile": true`
+// line deleted -- the exact one-token edit independent review demonstrated on
+// 2026-09-04: with the marker gone, LintW17ArmChain returns nothing and a
+// profile whose arm chain has been broken loads and applies.
+func unmarkedFilledProfile(t *testing.T) string {
+	t.Helper()
+
+	raw, err := os.ReadFile(filledProfile(t))
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	const marker = `"w17_profile": true,`
+	if !strings.Contains(string(raw), marker) {
+		t.Fatalf("setup: the shipped profile no longer carries %s verbatim", marker)
+	}
+	unmarked := strings.Replace(string(raw), marker, "", 1)
+
+	path := filepath.Join(t.TempDir(), "w17-ds4-unmarked.json")
+	if err := os.WriteFile(path, []byte(unmarked), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	return path
+}
+
 // recordingServer is the real gRPC server with StartLink stubbed out: it
 // records the request and reports success instead of touching a serial port.
 type recordingServer struct {
@@ -207,24 +232,117 @@ func TestHeadlessBringupDoesNotDoubleStartTheLink(t *testing.T) {
 	}
 }
 
-// TestHeadlessBringupWithoutATransmitterStartsNothing covers the shape this
-// fork does not ship but upstream users do: a config with no tx node has no
-// link to start, and that is not an error.
-func TestHeadlessBringupWithoutATransmitterStartsNothing(t *testing.T) {
-	rec, configCtl, port := startMapper(t)
+// bareUpstreamConfig is a minimal, valid, UNMARKED config document -- the shape
+// an upstream user of this fork would have: one number node, no transmitter,
+// no W17 marker.
+const bareUpstreamConfig = `{"config":{"input_output_map":{"n":{"id":"n","type":"number","number":{"output":0}}}}}`
 
-	path := filepath.Join(t.TempDir(), "no-tx.json")
-	if err := os.WriteFile(path, []byte(
-		`{"config":{"input_output_map":{"n":{"id":"n","type":"number","number":{"output":0}}}}}`,
-	), 0o600); err != nil {
+// TestHeadlessBringupRefusesAnUnmarkedProfile is the OD-9/D2-addendum gate
+// (owner ruling, 2026-09-04): `-config-file-path` is the W17 race-day path, so
+// a profile that does not declare `"w17_profile": true` is refused there,
+// before SetConfig -- no config applied, no radio started.
+//
+// It is the structural half of the fix independent review asked for. The arm
+// chain is checked only for a MARKED profile, so deleting the marker from the
+// car's own filled profile silenced every one of those rules on the copy that
+// matters; the refusal message was reworded not to suggest it, and this makes
+// the edit stop working on the path the car starts from.
+//
+// COST, stated plainly: this fork's binary no longer starts an upstream rig
+// from the command line. The web editor still applies those configs (the test
+// below), and that is where they belong.
+func TestHeadlessBringupRefusesAnUnmarkedProfile(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path func(*testing.T) string
+	}{
+		{"the car's own filled profile with the marker deleted", unmarkedFilledProfile},
+		{"an upstream config that never had one", func(t *testing.T) string {
+			t.Helper()
+			path := filepath.Join(t.TempDir(), "no-tx.json")
+			if err := os.WriteFile(path, []byte(bareUpstreamConfig), 0o600); err != nil {
+				t.Fatalf("setup: %v", err)
+			}
+			return path
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec, configCtl, port := startMapper(t)
+			path := tc.path(t)
+
+			err := Init(server.DefaultBindHost, "", path, benchBaudRate, port, false)
+			if err == nil {
+				t.Fatal("an unmarked profile must be refused by the headless bring-up")
+			}
+			if want := cc.W17MarkerRefusal(path); err.Error() != want {
+				t.Errorf("the refusal must be the one plain sentence, verbatim.\n got: %s\nwant: %s",
+					err.Error(), want)
+			}
+			if configCtl.Config != nil {
+				t.Error("a refused profile must not become the live config -- SetConfig ran")
+			}
+			if calls := rec.links(); len(calls) != 0 {
+				t.Errorf("a refused profile must not start the radio; got StartLink%v", calls)
+			}
+		})
+	}
+}
+
+// TestTheEditorStaysPermissiveForUnmarkedConfigs is the other half of the same
+// ruling: SetConfig -- the web editor's Apply, and the authoritative gate for
+// everything else -- must still accept an unmarked upstream config. If this
+// ever fails, the refusal above has leaked out of the race-day path and this
+// fork has stopped being usable for the rigs it inherited.
+func TestTheEditorStaysPermissiveForUnmarkedConfigs(t *testing.T) {
+	_, configCtl, port := startMapper(t)
+
+	payload, doc, err := configPayload([]byte(bareUpstreamConfig))
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if cc.DeclaresW17Marker(doc) {
+		t.Fatal("setup: this fixture is supposed to be unmarked")
+	}
+
+	conn, err := grpc.Dial("127.0.0.1:"+strconv.Itoa(port),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	defer conn.Close()
+
+	if _, err = pb.NewJoystickControlClient(conn).SetConfig(context.Background(),
+		&pb.SetConfigReq{Config: payload}); err != nil {
+		t.Fatalf("SetConfig must still accept an unmarked upstream config: %v", err)
+	}
+	if configCtl.Config == nil {
+		t.Error("the editor path reported success but applied nothing")
+	}
+}
+
+// TestSelfStartLinkWithoutATransmitterStartsNothing keeps the coverage the
+// refusal above took away from Init: a config with no tx node has no link to
+// start, and that is not an error. It drives selfStartLink directly, against
+// the same recording server, because the document it needs is one the headless
+// path no longer accepts.
+func TestSelfStartLinkWithoutATransmitterStartsNothing(t *testing.T) {
+	rec, _, port := startMapper(t)
+
+	_, doc, err := configPayload([]byte(bareUpstreamConfig))
+	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
-	if err := Init(server.DefaultBindHost, "", path, benchBaudRate, port, false); err != nil {
-		t.Fatalf("a config with no transmitter must still load: %v", err)
+	conn, err := grpc.Dial("127.0.0.1:"+strconv.Itoa(port),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("setup: %v", err)
 	}
-	if configCtl.Config == nil {
-		t.Error("the config should have been applied")
+	defer conn.Close()
+
+	if err := selfStartLink(context.Background(),
+		pb.NewJoystickControlClient(conn), doc, benchBaudRate); err != nil {
+		t.Fatalf("a config with no transmitter is not an error: %v", err)
 	}
 	if calls := rec.links(); len(calls) != 0 {
 		t.Errorf("there is no port to start; got StartLink%v", calls)
