@@ -126,6 +126,15 @@ func (c *Controller) deviceAdded(deviceIndex int) {
 	// device that derives the same id gets the index appended. The FIRST holder
 	// of an id keeps it, which is what makes a reconnect resolve again -- the id
 	// was freed when the pad was removed.
+	//
+	// LIMIT, with TWO IDENTICAL pads attached (independent review, 2026-09-04):
+	// "first holder keeps it" holds only for as long as that holder is
+	// attached, and the id is a function of GUID and name, so two identical
+	// pads derive the same one. Unplug pad A and the bare id is free; unplug
+	// and replug pad B, registered as <id>_<n>, and B claims the bare id --
+	// which is the id the profile names. The W17 rig is single-pad, so this
+	// cannot arise on race day; a rig with two identical pads should not rely
+	// on which physical pad a bare id lands on after a hot-plug.
 	id := device.Id
 	if existing, taken := c.Gamepads[id]; taken && existing != device {
 		id = fmt.Sprintf("%s_%d", id, deviceIndex)

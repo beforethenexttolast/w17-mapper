@@ -39,9 +39,13 @@ Bring-up happens in this exact order, and the order is load-bearing:
 1. the file's `{"config": …}` wrapper is unwrapped (the RPC carries the config
    *object*; the server re-wraps it before validating);
 2. any unfilled `REPLACE-WITH-*` placeholder is **refused**;
-3. if the file declares `"w17_profile": true`, its **arm chain is checked and a
-   wrong shape is refused** (below);
-4. only then is the link started — which is why the self-start can never open
+3. a file that does **not** declare `"w17_profile": true` inside its `config`
+   object is **refused** — `-config-file-path` is the car's own path, and the
+   marker is what switches the arm-chain rules on (owner ruling OD-9/D2
+   addendum). Configs for other rigs load in the **web editor** instead, which
+   stays permissive;
+4. the arm chain is then **checked and a wrong shape refused** (below);
+5. only then is the link started — which is why the self-start can never open
    the literal string `REPLACE-WITH-COM-PORT`.
 
 ### The two placeholders — and the refusal
@@ -67,7 +71,7 @@ node-graph editor, which is the hobbyist step this product removes.
 {
   "gamepads": [
     {
-      "id": "a1b2c3",
+      "id": "1f54d3",
       "name": "PS4 Controller",
       "guid": "030000004c050000cc09000000006800",
       "bus": "usb",
@@ -95,7 +99,9 @@ six hex characters starting at offset **1**, not 0 (`pkg/devices/util.go`,
 `DeriveGamepadId`). The odd offset is upstream's and is kept byte-for-byte,
 because every id already in a saved config was derived with it.
 `-list-devices` prints the GUID and the name it used, so the derivation can be
-checked by hand.
+checked by hand — and the sample output above is a real one, so it checks out:
+`md5("guid: 030000004c050000cc09000000006800, name: PS4 Controller")` sliced
+`[1:7]` is `1f54d3`. Your own pad's GUID will differ.
 
 Two consequences, and the second one is the trap:
 
@@ -310,9 +316,15 @@ arm chain is **refused with the reason named**, not warned about:
 the file this machine actually loads: the shape used to be pinned only by a test
 against the copy in the repo, while race day loads a hand-edited one. Without
 the marker a copy that has lost `reset_on_nan` is schema-valid, cycle-free and
-lint-clean, and re-opens the silent-re-arm defect. Configs for **other** rigs
-must not carry the marker — nothing here applies to them, and the refusal
-message says so.
+lint-clean, and re-opens the silent-re-arm defect.
+
+Since 2026-09-04 that is enforced rather than requested: **the headless
+bring-up refuses a profile without the marker outright** (owner ruling OD-9/D2
+addendum), before the config is applied and before the radio is started, so
+deleting the marker no longer buys a car that starts — it buys a car that says
+why it will not. Configs for **other** rigs must not carry the marker; load
+them in the mapper's own **web editor**, whose `SetConfig` still accepts an
+unmarked config, exactly as upstream does.
 
 `ch5 = and(seq-toggle{reset_on_nan}, liveness-probe)`:
 
@@ -338,7 +350,10 @@ message says so.
 
 ## If the controller drops out mid-drive
 
-**Reconnect it. The mapper picks it up again** (review finding MAP-6).
+**Reconnect it. The mapper picks it up again** (review finding MAP-6) — proven
+by tests against a fake SDL event source, **not** on a real Windows unplug, so
+the Windows/HIDAPI half of that promise is `[bench-TBD]` until the bench check
+at the end of this section is done.
 
 The registry used to be enumerated once at start-up and every SDL event body was
 thrown away, so a pad that dropped and came back never resolved again and the
