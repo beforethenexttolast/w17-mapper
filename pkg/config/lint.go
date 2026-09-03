@@ -303,10 +303,20 @@ func derefValues(v *[]util.RawValue) []util.RawValue {
 // W17ArmChainRefusal is the plain-language sentence the load path shows when a
 // W17-marked profile fails LintW17ArmChain. W17 fork addition (MAP-12).
 //
-// It names the marker, because the marker is what turned advice into a refusal:
-// the person reading it may have copied the W17 profile as a starting point for
-// something else, and the fix in that case is to drop the marker, not to
-// reshape the graph.
+// It names the marker, because the marker is what turned advice into a refusal.
+// It does NOT offer deleting the marker as a remedy, and that asymmetry is the
+// whole point of the wording (independent-review blocker, 2026-09-04): this
+// sentence is read by whoever is setting the car up on the giftee's PC, at the
+// moment the car will not start, and deleting one token from the file in front
+// of them silences every arm-chain rule on the only copy that matters -- which
+// is exactly the failure MAP-12 exists to close. Empirically confirmed at the
+// time: the same filled profile with reset_on_nan false and the marker deleted
+// is ACCEPTED and applied.
+//
+// The information an upstream rig needs is still here, but conditional and
+// second: the marker belongs on the W17 car's profile, so a config for another
+// rig should not have carried it in the first place -- that is a statement
+// about a file this is not, not an instruction about the file being refused.
 func W17ArmChainRefusal(findings []string) string {
 	if len(findings) == 0 {
 		return ""
@@ -314,7 +324,10 @@ func W17ArmChainRefusal(findings []string) string {
 
 	return fmt.Sprintf("this profile declares itself the W17 race-day profile "+
 		"(\"w17_profile\": true), so its arm chain has to be the shape that stops the car "+
-		"arming itself -- and it is not: %s. Either restore the arm chain (see "+
-		"configs/README.md) or, if this profile is for a different rig, remove the "+
-		"\"w17_profile\" marker.", strings.Join(findings, "; "))
+		"arming itself -- and it is not: %s. If this is the W17 car's own profile, restore "+
+		"the arm chain (see configs/README.md); do NOT delete the \"w17_profile\" marker to "+
+		"get past this -- the marker is what turns these checks on, and without them the "+
+		"car can arm itself after a controller dropout. The marker belongs only on the W17 "+
+		"car's profile: a saved profile for some other rig should never have carried it.",
+		strings.Join(findings, "; "))
 }

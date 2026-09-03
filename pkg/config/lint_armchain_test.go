@@ -224,21 +224,75 @@ func TestAnArmChannelWithNoInputIsCaught(t *testing.T) {
 }
 
 // TestTheRefusalSaysWhatToDoAboutIt. The sentence is read by someone whose car
-// will not move; it has to name the marker, because "remove the marker" is the
-// right fix when the profile was copied as a starting point for another rig.
+// will not move; it has to name the marker, the finding, and where the shape is
+// written down.
 func TestTheRefusalSaysWhatToDoAboutIt(t *testing.T) {
 	findings := armFindings(t, markedConfig(armChannel(func(_ *InputAnd, seq *InputSeq) {
 		seq.Seq.ResetOnNaN = false
 	})))
 	refusal := W17ArmChainRefusal(findings)
 
-	for _, want := range []string{"w17_profile", "reset_on_nan", "configs/README.md", "remove"} {
+	for _, want := range []string{"w17_profile", "reset_on_nan", "configs/README.md"} {
 		if !strings.Contains(refusal, want) {
 			t.Errorf("the refusal does not mention %q: %s", want, refusal)
 		}
 	}
 	if W17ArmChainRefusal(nil) != "" {
 		t.Error("an empty finding list must produce no sentence at all")
+	}
+}
+
+// TestTheRefusalNeverOffersDeletingTheMarker pins the wording change made after
+// independent review (2026-09-04). The earlier sentence ended "...or, if this
+// profile is for a different rig, remove the \"w17_profile\" marker", offering a
+// one-token edit as a CO-EQUAL remedy to reshaping the graph -- and that edit
+// silences every arm-chain rule on the copy the car actually loads. The
+// operator reads this at the bench, with the file open, at the moment the car
+// will not start.
+//
+// The rule this pins: the refusal may say the marker belongs only on the W17
+// profile, but no sentence in it may read as an instruction to remove, delete
+// or drop the marker from the file being refused.
+func TestTheRefusalNeverOffersDeletingTheMarker(t *testing.T) {
+	findings := armFindings(t, markedConfig(armChannel(func(_ *InputAnd, seq *InputSeq) {
+		seq.Seq.ResetOnNaN = false
+	})))
+	refusal := W17ArmChainRefusal(findings)
+	lower := strings.ToLower(refusal)
+
+	for _, verb := range []string{"remove", "delete", "drop", "take out", "strip"} {
+		for _, object := range []string{"the marker", "the \"w17_profile\" marker", "w17_profile"} {
+			bad := verb + " " + object
+			for at := 0; ; {
+				i := strings.Index(lower[at:], bad)
+				if i < 0 {
+					break
+				}
+				i += at
+				at = i + len(bad)
+				// A NEGATED mention is the point of the sentence ("do not
+				// delete the marker"), so only an un-negated instruction fails.
+				start := i - 12
+				if start < 0 {
+					start = 0
+				}
+				before := lower[start:i]
+				if strings.Contains(before, "not ") || strings.Contains(before, "never ") {
+					continue
+				}
+				t.Errorf("the refusal tells the operator to %q (context %q), which turns the "+
+					"arm-chain checks off on the one copy that matters: %s", bad, before, refusal)
+			}
+		}
+	}
+
+	// It must still restate the safe direction, or the sentence has lost the
+	// information the wording change was meant to keep.
+	if !strings.Contains(lower, "restore the arm chain") {
+		t.Errorf("the refusal no longer names the safe remedy: %s", refusal)
+	}
+	if !strings.Contains(lower, "do not delete") {
+		t.Errorf("the refusal no longer warns against deleting the marker: %s", refusal)
 	}
 }
 
