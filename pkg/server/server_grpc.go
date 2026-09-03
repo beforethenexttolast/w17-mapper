@@ -84,7 +84,12 @@ func (s *GRPCServer) GetConfig(context.Context, *pb.Empty) (*pb.GetConfigRes, er
 	var configJson []byte
 	var err error
 
-	if configJson, err = json.Marshal(s.ConfigCtl.Config); err != nil {
+	// W17 fork modification (review finding N2): the live config is read
+	// through the accessor, under the same lock SetConfig writes it with. This
+	// handler runs on a gRPC worker goroutine while an apply can be in flight
+	// on another, and the bare field read here was a real data race the -race
+	// suite simply never drove.
+	if configJson, err = json.Marshal(s.ConfigCtl.GetConfig()); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 

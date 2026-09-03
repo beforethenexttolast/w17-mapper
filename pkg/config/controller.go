@@ -18,7 +18,25 @@ import (
 )
 
 type Controller struct {
+	// Config is the live config.
+	//
+	// W17 fork modification (review finding N2): it is guarded by configMu.
+	// READ IT THROUGH GetConfig, not directly, from anything that can run
+	// while a config is being applied -- the gRPC GetConfig handler and
+	// GetEvalStates both can, and both used to read the field bare while
+	// SetConfig wrote it from another goroutine. That is a genuine data race
+	// (reproduced under -race: SetConfig's write against a concurrent
+	// json.Marshal of this field), and it was invisible to the -race suite
+	// only because no test drove the two together.
+	//
+	// It stays an exported field rather than becoming an atomic.Pointer
+	// because the JSON tag is load-bearing (UnmarshalJSON) and because
+	// single-goroutine tests read it directly after an apply has returned,
+	// where there is nothing to race with.
 	Config *Config `json:"config"`
+
+	// configMu guards Config. W17 fork addition (review finding N2).
+	configMu sync.RWMutex
 
 	deviceCtl   *dc.Controller
 	EvalDataMap *map[string]*[16]util.CRSFValue `json:"-"`
@@ -141,12 +159,42 @@ func (c *Controller) UnmarshalJSON(configJson []byte) error {
 		return errors.New(err.Error())
 	}
 
-	c.Config = tmp.Config
-
 	//propagate the config controller to all children
-	c.Config.Ctl = c
+	tmp.Config.Ctl = c
+
+	//W17 fork modification (review finding N2): published under the same lock
+	//every other writer takes. The Ctl assignment moved ABOVE the publish so
+	//nothing observes the config before it is fully formed.
+	c.publishConfig(tmp.Config)
 
 	return nil
+}
+
+// GetConfig returns the live config. It is the ONLY safe way to read
+// Controller.Config from a goroutine that can run while a config is being
+// applied. W17 fork addition (review finding N2).
+//
+// What it does and does not promise: the POINTER is read under the lock, so
+// the caller always sees a whole config rather than a torn field. It says
+// nothing about the node graph the pointer leads to -- the eval loop evaluates
+// those nodes in place, so anything that walks a live config's nodes (the
+// streaming RPC handlers, GetEvalStates) still shares that pre-existing
+// upstream hazard with the loop. Narrowing this to the field is deliberate:
+// it is the part the fork's own change introduced a writer for.
+func (c *Controller) GetConfig() *Config {
+	c.configMu.RLock()
+	defer c.configMu.RUnlock()
+
+	return c.Config
+}
+
+// publishConfig makes config the live one, under the lock GetConfig reads
+// through. W17 fork addition (review finding N2).
+func (c *Controller) publishConfig(config *Config) {
+	c.configMu.Lock()
+	defer c.configMu.Unlock()
+
+	c.Config = config
 }
 
 func (c *Controller) GetTransmitterChannels(device *pb.Transmitter, channels *pb.TransmitterChannels) *pb.TransmitterChannels {
@@ -220,13 +268,16 @@ func (c *Controller) GetEvalStates(states *pb.EvalStates) *pb.EvalStates {
 		}
 	}
 
-	config := c.Config
+	//W17 fork modification (review finding N2): one guarded read, then work
+	//from that pointer. The second bare read of c.Config below was the other
+	//half of the race SetConfig's write made reachable.
+	config := c.GetConfig()
 	if config == nil {
 		return states
 	}
 
 	for _, ih := range config.IOMap {
-		setStates(c.Config, &states.States, ih)
+		setStates(config, &states.States, ih)
 	}
 
 	return states
@@ -257,7 +308,7 @@ const configAdoptionTimeout = 2 * time.Second
 // old shape: set the field and return.
 func (c *Controller) SetConfig(config *Config) {
 	config.Ctl = c
-	c.Config = config
+	c.publishConfig(config)
 
 	if c.ConfigEventChan == nil || c.evalTomb == nil || !c.evalTomb.Alive() {
 		return

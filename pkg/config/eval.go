@@ -133,7 +133,7 @@ const evalHeartbeatInterval = 25 * time.Millisecond
 // starts. Kept for compatibility; StartEvalLoop calls evalLoop directly with
 // the config captured BEFORE the goroutine is spawned.
 func (c *Controller) EvalLoop() error {
-	return c.evalLoop(c.Config)
+	return c.evalLoop(c.GetConfig())
 }
 
 // evalLoop takes its starting config as an argument. W17 fork modification: the
@@ -240,7 +240,7 @@ func (c *Controller) StartEvalLoop() error {
 
 	// W17 fork modification: capture the starting config HERE, in the caller's
 	// goroutine, rather than reading the field from inside the loop's.
-	initial := c.Config
+	initial := c.GetConfig()
 
 	c.evalTomb = &tomb.Tomb{}
 	c.evalTomb.Go(func() error {
