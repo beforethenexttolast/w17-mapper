@@ -173,14 +173,15 @@ Loop:
 			fmt.Println("(config): exiting eval loop")
 			break Loop
 
-		case config = <-c.ConfigEventChan:
+		case event := <-c.ConfigEventChan:
+			config = event.Config
 			if config == nil {
 				holders = []*IOHolder{}
 				c.EvalDataMap = &map[string]*[16]util.CRSFValue{} //delete all existing entries
 				c.EvalUnresolvedMap = &map[string]*atomic.Bool{}
 				//W17 fork addition (MAP-4): clearing the config is an adoption
 				//too -- SetConfig must not wait for a swap that will never come.
-				c.markAdopted()
+				event.adopted()
 				continue
 			}
 
@@ -195,9 +196,12 @@ Loop:
 			c.EvalUnresolvedMap = &unresolved
 
 			//W17 fork addition (MAP-4): the config is LIVE from here -- this is
-			//the swap the send loop reads. Release SetConfig only now, so the
-			//RPC cannot report success for a config that is not on the wire.
-			c.markAdopted()
+			//the swap the send loop reads. Release the caller who sent THIS
+			//config, and only that caller (review finding B2): the done channel
+			//came in on the event, so a second applier waiting on its own
+			//channel is not released by this adoption. Reporting success for a
+			//config that is not on the wire is the whole of MAP-4.
+			event.adopted()
 			c.alertEvalChan()
 		case _ = <-c.StreamEventChan:
 			if config == nil {

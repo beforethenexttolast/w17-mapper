@@ -94,14 +94,51 @@ type Controller struct {
 	// with nothing to correct it: unlike the sibling device alert (whose dropped
 	// events the 25 ms heartbeat re-picks up), a dropped config alert has no
 	// second chance -- the heartbeat re-evaluates the OLD holders.
-	ConfigEventChan chan *Config
+	//
+	// W17 fork modification (review finding B2): it carries a ConfigEvent, not
+	// a bare *Config, so each applier's own done channel travels WITH its
+	// config. See ConfigEvent.
+	ConfigEventChan chan ConfigEvent
+}
 
-	// configAdopted is closed by the eval loop each time it finishes publishing
-	// a config, and replaced with a fresh channel. SetConfig takes the current
-	// one before it delivers, so waiting on it means "the config that is live
-	// now is mine or newer". W17 fork addition (MAP-4).
-	adoptionMu    sync.Mutex
-	configAdopted chan struct{}
+// ConfigEvent is one config application on its way to the eval loop, together
+// with the channel the applying SetConfig waits on. W17 fork addition (review
+// finding B2).
+//
+// Why the done channel rides ON the event rather than living on the Controller.
+// The first cut of the MAP-4 handshake used a single shared barrier channel
+// that the loop closed and replaced after every adoption, and SetConfig took
+// the current one before delivering. Under ONE applier that is exactly right.
+// Under two it is not: caller B can take barrier ch_n, A's adoption can close
+// ch_n, and B then delivers and waits on an already-closed channel -- returning
+// SUCCESS for a config that has not been adopted, which is MAP-4's own failure
+// mode surviving the fix for it. The reviewer reproduced precisely that.
+//
+// Per-caller, the question "has MY config been adopted?" has a channel that can
+// only answer it: the loop closes the Done that arrived with the config it just
+// published, and nothing else can close it. There is no shared state left to
+// get the pairing wrong.
+//
+// Done may be nil -- a producer that wants no acknowledgement (a future
+// internal caller, or a test poking the channel directly) simply leaves it
+// unset, and the loop treats it as nothing to close.
+type ConfigEvent struct {
+	// Config is the config to adopt. A nil Config CLEARS the live config; the
+	// loop treats that as an adoption too, so its applier is released.
+	Config *Config
+
+	// Done is closed by the eval loop once THIS config has been adopted -- the
+	// holders rebuilt and the published channel arrays swapped in, which is the
+	// moment the send loop starts transmitting from it.
+	Done chan struct{}
+}
+
+// adopted releases the applier that sent this event, if it asked to be told.
+// W17 fork addition (review finding B2).
+func (e ConfigEvent) adopted() {
+	if e.Done != nil {
+		close(e.Done)
+	}
 }
 
 func NewCtl(dc *dc.Controller) *Controller {
@@ -306,6 +343,10 @@ const configAdoptionTimeout = 2 * time.Second
 // A controller with no running eval loop -- a bare one in a load-path test, or
 // one already shut down -- has nothing that can adopt anything, so it keeps the
 // old shape: set the field and return.
+//
+// The barrier is PER CALLER (review finding B2): the done channel travels with
+// the config, so what SetConfig waits for can only be its own config's
+// adoption. See ConfigEvent for the shared-barrier defect this replaced.
 func (c *Controller) SetConfig(config *Config) {
 	config.Ctl = c
 	c.publishConfig(config)
@@ -314,12 +355,10 @@ func (c *Controller) SetConfig(config *Config) {
 		return
 	}
 
-	// Taken BEFORE the delivery, so the close we wait for cannot be one that
-	// happened before our config was sent.
-	adopted := c.adoptionBarrier()
+	event := ConfigEvent{Config: config, Done: make(chan struct{})}
 
 	select {
-	case c.ConfigEventChan <- config:
+	case c.ConfigEventChan <- event:
 	case <-c.evalTomb.Dying():
 		return
 	case <-time.After(configAdoptionTimeout):
@@ -329,7 +368,7 @@ func (c *Controller) SetConfig(config *Config) {
 	}
 
 	select {
-	case <-adopted:
+	case <-event.Done:
 	case <-c.evalTomb.Dying():
 	case <-time.After(configAdoptionTimeout):
 		fmt.Printf("(config) WARNING: the new config was delivered but not adopted within %v -- "+
@@ -337,35 +376,8 @@ func (c *Controller) SetConfig(config *Config) {
 	}
 }
 
-// adoptionBarrier returns the channel the NEXT adoption will close.
-func (c *Controller) adoptionBarrier() <-chan struct{} {
-	c.adoptionMu.Lock()
-	defer c.adoptionMu.Unlock()
-
-	if c.configAdopted == nil {
-		c.configAdopted = make(chan struct{})
-	}
-	return c.configAdopted
-}
-
-// markAdopted is called by the eval loop once a config's channel arrays are
-// published, releasing whoever is waiting in SetConfig. W17 fork addition.
-func (c *Controller) markAdopted() {
-	c.adoptionMu.Lock()
-	defer c.adoptionMu.Unlock()
-
-	if c.configAdopted != nil {
-		close(c.configAdopted)
-	}
-	c.configAdopted = make(chan struct{})
-}
-
 func (c *Controller) initConfigChan() {
 	// Buffered so delivery does not depend on the loop being at its select the
 	// instant SetConfig runs; see ConfigEventChan.
-	c.ConfigEventChan = make(chan *Config, 1)
-
-	c.adoptionMu.Lock()
-	defer c.adoptionMu.Unlock()
-	c.configAdopted = make(chan struct{})
+	c.ConfigEventChan = make(chan ConfigEvent, 1)
 }
