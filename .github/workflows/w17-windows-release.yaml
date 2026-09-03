@@ -40,9 +40,26 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  # Serialize overlapping runs on the same ref (a re-pushed tag, or a
+  # workflow_dispatch fired against a ref that already has a run in flight)
+  # so two runs can never both be mid-"gh release view / create-or-upload"
+  # on the same release at once (N7). Do not cancel a run already inside the
+  # release step: an interrupted `gh release upload --clobber` could leave
+  # the GitHub release with no asset attached.
+  group: w17-windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build-windows-amd64:
-    runs-on: windows-latest
+    # Pinned, not windows-latest: the builder image
+    # (oneeyefpv/windows-amd64-builder) is FROM
+    # mcr.microsoft.com/windows/servercore:ltsc2022 (Dockerfile.windows-amd64:5),
+    # i.e. Windows Server 2022. windows-latest moved to the Server 2025 image,
+    # which cannot run a downlevel process-isolated container matching an
+    # older servercore base without Hyper-V isolation (not available on
+    # GitHub-hosted runners) -- `docker run` for this image would fail there.
+    runs-on: windows-2022
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -57,7 +74,7 @@ jobs:
           docker run -m 4096m -v ${{ github.workspace }}:C:\app -t oneeyefpv/windows-amd64-builder dir /s /c "
           cd app &&
           go generate ./... &&
-          go test ./... &&
+          go test -tags static ./... &&
           go build -trimpath -tags static -o elrs-joystick-control.exe .\cmd\elrs-joystick-control\. "
 
       - name: Assemble W17 release bundle
@@ -72,6 +89,8 @@ jobs:
           Copy-Item 'configs\README.md' -Destination "$bundle\configs\README.md"
           Copy-Item 'FORK-NOTICE.md' -Destination $bundle
           Copy-Item 'LICENSE' -Destination $bundle
+          Copy-Item 'LICENSE-GPL' -Destination $bundle
+          Copy-Item 'LICENSE-FAIR-SOURCE' -Destination $bundle
 
           $refName = '${{ github.ref_name }}'
           $shortSha = '${{ github.sha }}'.Substring(0, 7)
@@ -103,6 +122,9 @@ jobs:
             configs\README.md           profile docs (channel map, arm chain, SDL layout, bench checks)
             FORK-NOTICE.md              provenance, licence election, change log, safety boundary
             LICENSE                     upstream's dual-licence pointer (this fork elects GPL-3.0-or-later)
+            LICENSE-GPL                 GNU GPL v3 full text -- this fork's elected licence (GPL section 4
+                                         requires the licence text to accompany every copy of the program)
+            LICENSE-FAIR-SOURCE         Fair Source 0.9 full text -- upstream's other option, not elected here
             W17-README.txt              this file
 
           Quickstart (manual / bench use)
@@ -117,14 +139,18 @@ jobs:
           How the ground station uses this bundle
           ----------------------------------------
           Race day does not run the command above by hand. It launches this
-          exe directly and passes only "-config-file-path <Profile Path>"
+          exe directly and passes only "-config-file-path <saved profile>"
           (w17-ground-station main/raceDayOrchestrator.js:44 and :50-71,
-          MAPPER_ARG_WHITELIST / mapperArgv), where <Profile Path> is the
-          ABSOLUTE path set in the ground station's own settings. Point:
-            Mapper Path  -> ...\elrs-joystick-control.exe   (wherever you unzip this bundle)
-            Profile Path -> ...\configs\w17-ds4.json         (unzipped alongside it)
-          Both must be OS-absolute paths -- a relative value is refused before
-          launch (raceDayOrchestrator.js:60-69).
+          MAPPER_ARG_WHITELIST / mapperArgv), where <saved profile> is the
+          ABSOLUTE path set in the ground station's own settings. In the
+          ground station Settings (gear icon) RACE DAY row, point:
+            drive program -> ...\elrs-joystick-control.exe   (wherever you unzip this bundle)
+            saved profile -> ...\configs\w17-ds4.json         (unzipped alongside it)
+          (those are the labels visible on screen; internally the ground
+          station stores them as mapperPath/profilePath --
+          w17-ground-station shared/settings.js:220,226-227). Both must be
+          OS-absolute paths -- a relative value is refused before launch
+          (raceDayOrchestrator.js:60-69).
 
           Known issues in today's code (tracked, not fixed by this bundle)
           -------------------------------------------------------------------
@@ -140,6 +166,12 @@ jobs:
             race day's own launch does not do today. "Running" on the
             race-day card currently means "the process started", not "frames
             are on the wire" -- verify with a bench check before trusting it.
+            Today's ONLY way to actually start the link is the mapper's own
+            web UI at http://localhost:3000 -- its RF Link panel picks the
+            serial port and has its own Start Link button
+            (webapp/src/components/pages/home/misc/RFLinkManager.jsx) --
+            bench operators use this escape hatch now; it is also why MAP-8
+            below matters even before MAP-2 is fixed.
 
           Safety
           ------
@@ -149,10 +181,31 @@ jobs:
           FORK-NOTICE.md's "Safety boundary" section for the full statement
           and the push-review rule that guards it.
 
+          [fix-wave: MAP-8] Separately, this binary opens two unauthenticated
+          listeners on ALL network interfaces, not just localhost: the gRPC
+          control service on :10000 with server reflection enabled
+          (pkg/server/controller.go:81), and the grpc-web node-graph editor
+          on :3000 (pkg/http/controller.go:65). Anyone who can reach the PC's
+          IP on the same network -- e.g. the race-day Wi-Fi hotspot the
+          ground station and phone HUD also share -- can call SetConfig,
+          StartLink, StopLink and SetCRSFDeviceField with no credentials.
+          There is no mitigation to hand the giftee today: the exe has a
+          -disable-web-ui flag (cmd/elrs-joystick-control/main.go:57), but
+          the ground station's race-day launch never passes it
+          (w17-ground-station main/raceDayOrchestrator.js:44 --
+          MAPPER_ARG_WHITELIST carries only -config-file-path). Not fixed by
+          this packaging change -- tracked as review finding MAP-8 for a
+          separate fix wave (bind loopback by default).
+
           Provenance
           ----------
-          Fork of ELRS Joystick Control (github.com/kaack/elrs-joystick-control),
-          GPL-3.0-or-later election. Full change log: FORK-NOTICE.md.
+          Derived from ELRS Joystick Control
+          (github.com/kaack/elrs-joystick-control), GPL-3.0-or-later
+          election. Full change log: FORK-NOTICE.md.
+
+          Corresponding source for THIS exact binary (GPL section 6): this
+          fork's public source, at the commit this build was produced from --
+            https://github.com/beforethenexttolast/w17-mapper.git @ $shortSha ($refName)
           "@ | Set-Content -Path "$bundle\W17-README.txt" -Encoding utf8
 
           Compress-Archive -Path $bundle -DestinationPath "$bundle.zip" -Force
@@ -172,8 +225,24 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $tag = '${{ github.ref_name }}'
-          gh release view $tag *> $null
-          if ($LASTEXITCODE -eq 0) {
+
+          # `gh release view` exits non-zero for any tag with no release yet
+          # -- true of the FIRST w17-v* tag ever pushed. PowerShell 7.3+
+          # defaults $PSNativeCommandUseErrorActionPreference to $true, which
+          # turns that expected non-zero exit into a terminating error under
+          # $ErrorActionPreference = 'Stop' above, aborting this step before
+          # the release-create branch below ever runs (N3). Catch that AND
+          # fall back to $LASTEXITCODE, so this works whichever native-command
+          # behavior the runner's pwsh defaults to.
+          $releaseExists = $false
+          try {
+            gh release view $tag *> $null
+            $releaseExists = ($LASTEXITCODE -eq 0)
+          } catch {
+            $releaseExists = $false
+          }
+
+          if ($releaseExists) {
             gh release upload $tag 'w17-mapper-windows-amd64.zip' --clobber
           } else {
             gh release create $tag 'w17-mapper-windows-amd64.zip' --title $tag --generate-notes
