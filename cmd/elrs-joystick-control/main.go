@@ -38,6 +38,16 @@ func envTruthy(name string) bool {
 
 func main() {
 
+	// W17 fork modification: the process exit status is set here and applied by
+	// the FIRST deferred call, which -- defers being LIFO -- therefore runs LAST,
+	// after every controller below has shut down. A headless bring-up failure
+	// (an unreadable or unfilled profile, a COM port that is not there) must
+	// leave a non-zero status for the ground station to see, and must still
+	// unwind the controllers cleanly on the way out. os.Exit skips defers, so it
+	// cannot be called at the failure site itself.
+	exitCode := 0
+	defer func() { os.Exit(exitCode) }()
+
 	webAppPort := new(int)
 	flag.IntVar(webAppPort, "webapp-port", 3000, "Web Application port number")
 
@@ -122,8 +132,14 @@ func main() {
 	serverCtl := gc.NewCtl(*grpcPort, grpcServer, devicesCtl, serialCtl, configCtl, linkCtl, httpCtl, hiBroadcaster)
 	defer serverCtl.Quit()
 
-	// Automatically configure through gprc when conditions are met
-	client.Init(*txServerPortName, *configFilePath, *txServerPortBaudRate, *grpcPort, *disableWebUI)
+	// Automatically configure through gprc when conditions are met.
+	// W17 fork modification: Init returns an error instead of panicking, so a
+	// bring-up failure prints one readable line rather than a goroutine dump.
+	if err := client.Init(*txServerPortName, *configFilePath, *txServerPortBaudRate, *grpcPort, *disableWebUI); err != nil {
+		fmt.Printf("\n%s\n\n", err.Error())
+		exitCode = 1
+		return
+	}
 
 	go func() {
 		sigChan := make(chan os.Signal)
