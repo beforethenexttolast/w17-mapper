@@ -148,11 +148,14 @@ code):
   `enum<whitespace>HeadIntentState` — two matching files, including a file that
   only names it in a comment, is a refusal;
 - that file may open the block **once**;
-- inside the block, after `//` comments are stripped, a line that is not blank,
-  not the closing `}` and not an `option …`/`reserved …` statement **must** read
-  `NAME = <decimal>` followed by `;` or `[`, and must carry exactly one `;`, at
-  its end. Anything else is refused as an *unparseable declaration* — it is
-  never skipped, which is precisely the hole the first rewrite left;
+- inside the block, after `//` comments are stripped, **every** non-blank line
+  that is not the closing `}` must carry **exactly one `;`, at its end** —
+  `option …` and `reserved …` statements included, so nothing can ride on
+  another statement's tail;
+- and every such line that is not `option …`/`reserved …` must also read
+  `NAME = <decimal>` followed by `;` or `[`. A line failing either rule is
+  refused as an *unparseable declaration* — never skipped, which is precisely
+  the hole the first rewrite left;
 - the values so read must be **0..8, each declared once**, value **8** named
   `HEAD_INTENT_STATE_ACTIVE_LOG_ONLY` (compared exactly), and **no other name**
   may carry `ACTIVE` as an underscore-separated token, compared

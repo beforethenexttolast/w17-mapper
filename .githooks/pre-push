@@ -16,12 +16,13 @@
 #   3. The head-intent enum, asserted POSITIVELY and FAIL-CLOSED. Precisely:
 #      exactly ONE .proto in the pushed tree may match `enum<space>HeadIntentState`
 #      (spaces or tabs), and that file may open the block only once. Inside the
-#      block, every line that is left after `//` comments are stripped and that
-#      is not blank, not the closing `}`, and not an `option ...` or
-#      `reserved ...` statement MUST read NAME = <decimal> followed by `;` or
-#      `[`, and must carry exactly one `;`, at its end; anything else is
-#      REFUSED as an unparseable declaration, never skipped -- one statement
-#      per line, so nothing can ride on another statement's tail.
+#      block, after `//` comments are stripped, EVERY non-blank line that is not
+#      the closing `}` must carry exactly one `;`, at its end -- `option ...`
+#      and `reserved ...` statements included -- so nothing can ride on another
+#      statement's tail; and every such line that is not `option ...` or
+#      `reserved ...` must also read NAME = <decimal> followed by `;` or `[`.
+#      A line failing either rule is REFUSED as an unparseable declaration,
+#      never skipped.
 #      The values so read must be exactly 0..8, each declared once,
 #      value 8 named HEAD_INTENT_STATE_ACTIVE_LOG_ONLY, and no other name may
 #      carry ACTIVE as an underscore-separated token, compared
