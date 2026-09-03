@@ -19,8 +19,10 @@
 #      block, every line that is left after `//` comments are stripped and that
 #      is not blank, not the closing `}`, and not an `option ...` or
 #      `reserved ...` statement MUST read NAME = <decimal> followed by `;` or
-#      `[`; anything else is REFUSED as an unparseable declaration, never
-#      skipped. The values so read must be exactly 0..8, each declared once,
+#      `[`, and must carry exactly one `;`, at its end; anything else is
+#      REFUSED as an unparseable declaration, never skipped -- one statement
+#      per line, so nothing can ride on another statement's tail.
+#      The values so read must be exactly 0..8, each declared once,
 #      value 8 named HEAD_INTENT_STATE_ACTIVE_LOG_ONLY, and no other name may
 #      carry ACTIVE as an underscore-separated token, compared
 #      case-insensitively. A tree where no .proto declares the enum is refused
@@ -61,6 +63,11 @@
 #   * Check 3 skips `option ...` and `reserved ...` lines inside the block BY
 #     NAME, because neither declares a value. `option allow_alias = true` opens
 #     no hole: two names sharing one number is already refused as a duplicate.
+#   * Check 3 requires ONE statement per line, ending in its semicolon, and it
+#     ignores whatever follows the `{` on the enum's own header line. proto3
+#     does not care about newlines, so a legal file written on one line is
+#     REFUSED here rather than read. That is a false refusal, and the intended
+#     direction: reformat the .proto rather than widen this.
 #   * Check 3 requires exactly one .proto to match, so a SECOND .proto that
 #     merely names `enum HeadIntentState` — in a comment, say — is refused
 #     rather than tolerated. Deliberate: a clean decoy file beside a tampered
@@ -195,6 +202,20 @@ assert_head_intent_enum() {
 
 			# Blank after comment stripping: nothing declared, nothing to read.
 			if (line ~ /^[[:space:]]*$/) { next }
+
+			trimmed = line
+			sub(/^[[:space:]]+/, "", trimmed)
+			sub(/[[:space:]]+$/, "", trimmed)
+
+			# ONE statement per line, and the line ends with its semicolon.
+			# proto3 is whitespace-insensitive, so without this a value could
+			# ride on the tail of another statement -- `... = 8; } enum
+			# HeadIntentState { ... = 9;` closes the block and opens a second
+			# one on a line this check reads as an ordinary value 8.
+			if (gsub(/;/, ";", line) != 1 || line !~ /;[[:space:]]*$/) {
+				fail("unparseable declaration in the HeadIntentState block: " trimmed)
+			}
+
 			# option/reserved declare no value. See HONEST LIMITS for why
 			# skipping them by name opens nothing.
 			if (line ~ /^[[:space:]]*(option|reserved)[[:space:]]/) { next }
@@ -205,9 +226,6 @@ assert_head_intent_enum() {
 			# refusal, not a skip -- that hole is what let `= 9 [deprecated =
 			# false]`, `= 0x9` and `= -1` through (injections A1-A3).
 			if (line !~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*[0-9]+[[:space:]]*(;|\[)/) {
-				trimmed = line
-				sub(/^[[:space:]]+/, "", trimmed)
-				sub(/[[:space:]]+$/, "", trimmed)
 				fail("unparseable declaration in the HeadIntentState block: " trimmed)
 			}
 
