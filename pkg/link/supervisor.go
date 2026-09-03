@@ -39,6 +39,17 @@ func (c *Controller) StopSupervisor() error {
 	return nil
 }
 
+// sendChanBuffer is the room the recv loop (and the CRSF settings RPCs) have to
+// hand work to the send loop without a rendezvous. W17 fork addition (MAP-3),
+// defence in depth behind the tomb-armed sends in recv.go: with a buffer, a
+// send loop that is momentarily busy no longer parks its producers at all, and
+// a send loop that has DIED parks them only until the tomb is killed.
+//
+// Deliberately small. This is a control path, not a queue: a backlog of stale
+// model-id or rate-sync frames is worthless, and anything larger would just
+// delay the moment a wedged send loop becomes visible.
+const sendChanBuffer = 4
+
 func action(action string, err error) {
 	if err != nil {
 		fmt.Printf("error while %s. %s", action, err.Error())
@@ -51,7 +62,7 @@ func (c *Controller) SupervisorLoop(port string, baudRate int32) error {
 	refreshRate := crossfire.GetRefreshRate(baudRate)
 	sport := &serial.Port{Name: port, BaudRate: baudRate, ReadTimeout: refreshRate * 4}
 
-	sendChan := make(chan any)
+	sendChan := make(chan any, sendChanBuffer)
 	recvChan := make(chan any)
 	portChan := make(chan any)
 
