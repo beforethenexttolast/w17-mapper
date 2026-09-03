@@ -15,6 +15,7 @@ import (
 	lc "github.com/kaack/elrs-joystick-control/pkg/link"
 	sc "github.com/kaack/elrs-joystick-control/pkg/serial"
 	gc "github.com/kaack/elrs-joystick-control/pkg/server"
+	"github.com/kaack/elrs-joystick-control/webapp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 	_ "net/http/pprof"
@@ -113,7 +114,18 @@ func main() {
 	grpcServer := grpc.NewServer([]grpc.ServerOption{}...)
 	reflection.Register(grpcServer)
 
-	httpCtl := hc.NewCtl(*webAppPort, grpcServer)
+	// W17 fork modification: the built web bundle is resolved HERE and handed to
+	// the HTTP controller, rather than imported by it. That keeps the embedded
+	// bundle -- which only exists after `go generate ./...` has run npm and
+	// webpack -- out of the build graph of everything except this binary.
+	webAssets, err := webapp.HTTPFileSystem()
+	if err != nil {
+		fmt.Printf("\ncould not open the built web UI bundle: %s\n\n", err.Error())
+		exitCode = 1
+		return
+	}
+
+	httpCtl := hc.NewCtl(*webAppPort, grpcServer, webAssets)
 	defer httpCtl.Quit()
 
 	devicesCtl := dc.NewCtl()
