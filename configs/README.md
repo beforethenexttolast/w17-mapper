@@ -20,7 +20,14 @@ the RF link on that port itself, at the `-tx-serial-port-baud-rate` default
 station launch the mapper with the single flag its argv whitelist carries.
 
 An explicit `-tx-serial-port-name` still wins outright — the hobbyist path is
-unchanged, and no second link is started.
+unchanged, and no second link is started. **It must name the same port as the
+profile's `tx.port`, or nothing is transmitted.** The send loop resolves a
+port's channels by matching the link's port name against the config's `tx.port`
+(`pkg/link/send.go` → `resolveChannels`), so a link started on a port the
+profile does not name resolves no channels and writes no channel frame at all:
+the process runs, the ground station says "running", and the car does not move.
+Bring-up prints a warning line when it sees the two disagree — but the warning
+is the only thing that notices, so match them.
 
 The config is applied through the same gRPC `SetConfig` the editor uses, so
 it passes the same schema validation, the read-cycle check, the placeholder
@@ -42,7 +49,7 @@ Bring-up happens in this exact order, and the order is load-bearing:
 | Placeholder | Where | Replace with |
 |---|---|---|
 | `REPLACE-WITH-DS4-ID` | every `gamepad.id` | the pad's id from the mapper UI gamepad list (an md5-derived 6-char hash of the SDL GUID+name — device-specific, so it cannot be committed) |
-| `REPLACE-WITH-COM-PORT` | `tx.port` | the ELRS TX serial port (e.g. `COM5`) — this is also the port the link is started on |
+| `REPLACE-WITH-COM-PORT` | `tx.port` | the ELRS TX serial port (e.g. `COM5`) — this is also the port the link is started on, and it **must equal `-tx-serial-port-name`** if you pass that flag, or the send loop resolves no channels |
 
 **A profile with either placeholder still in it is REFUSED, not loaded**
 (owner decision OD-9/D3). Both load paths refuse it — the headless

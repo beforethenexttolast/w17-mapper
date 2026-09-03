@@ -164,6 +164,12 @@ func Init(grpcHost, txServerPortName, configFilePath string, txServerPortBaudRat
 			if err = selfStartLink(ctx, client, doc, txServerPortBaudRate); err != nil {
 				return err
 			}
+		} else if warning := explicitPortMismatch(txServerPortName, doc); warning != "" {
+			// W17 fork addition (review finding B1): the explicit flag wins, and
+			// that is the whole hazard. A link started on a port the profile does
+			// not name resolves NO channels -- see explicitPortMismatch -- and
+			// nothing else in the process says so.
+			fmt.Println(warning)
 		}
 	}
 
@@ -176,6 +182,40 @@ func Init(grpcHost, txServerPortName, configFilePath string, txServerPortBaudRat
 	}
 
 	return nil
+}
+
+// explicitPortMismatch returns the one-line bring-up warning for an explicit
+// -tx-serial-port-name that disagrees with the profile's own single transmitter
+// port, or "" when there is nothing to warn about. W17 fork addition (review
+// finding B1).
+//
+// Why this needs saying out loud. The send loop resolves a port's channel
+// array by matching the LINK's port name against the map the config layer
+// publishes, which is keyed by the transmitter's own tx.port
+// (link.resolveChannels, fed by config.applyConfig). A link on any other name
+// finds no entry, and the fork's answer to "no config resolves" is to write no
+// channel frame at all so the receiver's link-loss failsafe can fire. So an
+// explicit flag that disagrees with the profile produces a process that is
+// running, a link that is open, a card that says "running" -- and a car that
+// cannot move, with nothing anywhere naming the reason. configs/README.md has
+// carried that caveat since the profile shipped; this is the same sentence
+// where the operator will actually be looking.
+//
+// It stays a WARNING rather than a refusal: the flag is the hobbyist path, and
+// a rig with several transmitters, or one whose profile names none, is a shape
+// this cannot judge -- so it speaks only about the case it is sure of.
+func explicitPortMismatch(explicitPort string, doc map[string]any) string {
+	ports := cc.TransmitterPorts(doc)
+	if len(ports) != 1 || ports[0] == explicitPort {
+		return ""
+	}
+
+	return fmt.Sprintf("(bring-up) WARNING: the radio link was started on %s, but this "+
+		"saved profile's transmitter is on %s. The send loop matches the link's port "+
+		"against the profile's own tx.port, so no channels resolve on %s and NOTHING IS "+
+		"TRANSMITTED -- the car will not move. Pass -tx-serial-port-name %s instead, or "+
+		"drop the flag and let the profile choose the port",
+		explicitPort, ports[0], explicitPort, ports[0])
 }
 
 // selfStartLink starts the RF link on the port the just-loaded profile names.
