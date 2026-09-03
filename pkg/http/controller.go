@@ -188,6 +188,15 @@ type echoShutdowner interface {
 //     process must not die of it: at this point the ground station has already
 //     been told the mapper is stopping, and a crash here would surface to the
 //     operator as the drive program having failed.
+//
+// What it DOES report (review finding N3): a genuine shutdown failure. The
+// first cut wrote `if err := server.Shutdown(ctx)`, which SHADOWED the named
+// return, so this function could only ever return nil -- a stuck client that
+// ran the deadline out reached nobody: not the tomb, not Stop(), not the
+// StopHTTP RPC, not the operator. At base that error propagated. A recovered
+// PANIC still yields nil, deliberately: it has already been printed, the
+// process is on its way out, and turning it into a tomb error would be the
+// process fault this function exists to prevent, one indirection later.
 func shutdownEcho(server echoShutdowner) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -203,12 +212,16 @@ func shutdownEcho(server echoShutdowner) (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	if err := server.Shutdown(ctx); err != nil {
+	if err = server.Shutdown(ctx); err != nil {
 		fmt.Printf("(http): the web UI did not stop gracefully within %v, closing it: %s\n",
 			shutdownTimeout, err.Error())
+
 		if closeErr := server.Close(); closeErr != nil {
 			fmt.Printf("(http): forced close reported: %s\n", closeErr.Error())
+			err = errors.Join(err, closeErr)
 		}
+
+		return err
 	}
 
 	return nil

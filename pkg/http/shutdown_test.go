@@ -26,6 +26,7 @@ import (
 type fakeServer struct {
 	shutdownCtx context.Context
 	shutdownErr error
+	closeErr    error
 	panicWith   any
 	closed      bool
 }
@@ -40,7 +41,7 @@ func (f *fakeServer) Shutdown(ctx context.Context) error {
 
 func (f *fakeServer) Close() error {
 	f.closed = true
-	return nil
+	return f.closeErr
 }
 
 // TestShutdownPassesARealContext is the defect itself: a nil context is what
@@ -66,20 +67,48 @@ func TestShutdownPassesARealContext(t *testing.T) {
 
 // TestShutdownForcesCloseOnDeadline covers the other half: a graceful shutdown
 // that does not finish must not leave the process waiting on a client.
+//
+// It must also SAY SO (review finding N3). The first cut of this fix wrote
+// `if err := server.Shutdown(ctx)`, shadowing the named return, so the function
+// could only ever return nil and a stuck client that ran the deadline out
+// reached nobody -- not the tomb, not Stop(), not the StopHTTP RPC, not the
+// operator. At base the error propagated.
 func TestShutdownForcesCloseOnDeadline(t *testing.T) {
 	server := &fakeServer{shutdownErr: context.DeadlineExceeded}
 
-	if err := shutdownEcho(server); err != nil {
-		t.Errorf("a forced close is not a failure to report: %v", err)
+	err := shutdownEcho(server)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("a shutdown that ran out its deadline must be reported, got %v", err)
 	}
 	if !server.closed {
 		t.Error("a shutdown that timed out must be followed by a forced close")
 	}
 }
 
+// TestShutdownReportsBothFailures: when the forced close fails too, neither
+// error may be dropped -- the second one is the more interesting of the two,
+// because it means the listener is still up.
+func TestShutdownReportsBothFailures(t *testing.T) {
+	closeErr := errors.New("listener still open")
+	server := &fakeServer{shutdownErr: context.DeadlineExceeded, closeErr: closeErr}
+
+	err := shutdownEcho(server)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("the graceful-shutdown failure was dropped, got %v", err)
+	}
+	if !errors.Is(err, closeErr) {
+		t.Errorf("the forced-close failure was dropped, got %v", err)
+	}
+}
+
 // TestShutdownRecoversFromAPanic is the invariant that matters: whatever the
 // HTTP stack does on the way out, it cannot be a process fault. Without the
 // recover this test crashes the whole run rather than failing.
+//
+// A recovered panic still reports nil, unlike a genuine shutdown error: it has
+// already been printed, the process is on its way out, and turning it into a
+// tomb error would be the process fault the recover exists to prevent, one
+// indirection later.
 func TestShutdownRecoversFromAPanic(t *testing.T) {
 	server := &fakeServer{panicWith: errors.New("runtime error: invalid memory address")}
 
