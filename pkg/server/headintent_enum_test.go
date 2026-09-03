@@ -62,15 +62,21 @@ func TestHeadIntentEnumStopsAtActiveLogOnly(t *testing.T) {
 }
 
 // hasActiveToken reports whether ACTIVE appears as a WHOLE underscore-separated
-// token in the name.
+// token in the name, WITHOUT regard to case.
 //
 // A plain substring test is wrong here and the enum says why:
 // HEAD_INTENT_STATE_INACTIVE = 6 contains "ACTIVE" and is the exact opposite of
 // an active state. The token rule refuses HEAD_INTENT_STATE_ACTIVE and
 // HEAD_INTENT_STATE_ACTIVE_OUTPUT while leaving INACTIVE alone.
-// .githooks/pre-push check 3 makes the same distinction, by the same rule.
+//
+// The case fold is not cosmetic. Protoc generates the Go identifier from the
+// .proto spelling verbatim, so HEAD_INTENT_STATE_Active_Output is a legal proto
+// value name that a case-SENSITIVE rule reads as an ordinary state -- which is
+// how it passed both this test and the hook until 2026-09-04 (review injection
+// A4). .githooks/pre-push check 3 makes the same distinction, by the same rule,
+// with the same fold.
 func hasActiveToken(name string) bool {
-	for _, token := range strings.Split(name, "_") {
+	for _, token := range strings.Split(strings.ToUpper(name), "_") {
 		if token == "ACTIVE" {
 			return true
 		}
@@ -78,6 +84,10 @@ func hasActiveToken(name string) bool {
 	return false
 }
 
+// TestActiveLogOnlyIsTheOnlyActiveState compares the token case-insensitively
+// but the permitted name EXACTLY: a case variant of ACTIVE_LOG_ONLY is a
+// different Go identifier and a different wire name, so it is a contract change
+// and must fail here.
 func TestActiveLogOnlyIsTheOnlyActiveState(t *testing.T) {
 	for value, name := range pb.HeadIntentState_name {
 		if hasActiveToken(name) && name != activeLogOnlyName {
@@ -98,6 +108,11 @@ func TestTheActiveTokenRuleIsNotASubstringMatch(t *testing.T) {
 		activeLogOnlyName:                 true,
 		"HEAD_INTENT_STATE_NOT_CENTERED":  false,
 		"HEAD_INTENT_STATE_REACTIVATED":   false,
+		// The case fold (review injection A4): a mixed-case spelling is the
+		// same state to a reader and was invisible to the old rule.
+		"HEAD_INTENT_STATE_Active_Output": true,
+		"HEAD_INTENT_STATE_active":        true,
+		"head_intent_state_inactive":      false,
 	}
 	for name, want := range cases {
 		if got := hasActiveToken(name); got != want {
