@@ -188,6 +188,13 @@ jobs:
           race day this PC hosts the Wi-Fi hotspot the phone HUD joins. The Go
           profiling handlers are likewise off unless -pprof is passed.
 
+          What loopback does NOT close: the web-UI port still sends
+          Access-Control-Allow-Origin: * unconditionally, so any web page
+          open in a browser ON THIS PC is still a reachable client and can
+          call SetConfig, StartLink, StopLink and SetCRSFDeviceField with no
+          credentials. Loopback removes every host on the network; the
+          browser on this machine is what is left.
+
           -bind-all restores the old all-interfaces behaviour in one flag.
           Anyone who can then reach this PC's IP can call SetConfig,
           StartLink, StopLink and SetCRSFDeviceField with no credentials, so

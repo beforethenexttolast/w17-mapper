@@ -81,6 +81,13 @@ authenticated, and on race day the laptop hosts the phone's Wi-Fi hotspot, so
 local — the ground station dials `127.0.0.1:10000` — so the default costs
 nothing.
 
+**What loopback does not close.** The grpc-web port still sets
+`Access-Control-Allow-Origin: *` unconditionally (`pkg/http/controller.go`), so
+**any web page open in a browser on this same PC** remains a reachable client:
+it can call `SetConfig`, `StartLink`, `StopLink` and `SetCRSFDeviceField`
+without credentials. Loopback removes every host on the network; the browser on
+this machine is what is left.
+
 - `-bind-host <ip>` — listen somewhere else.
 - `-bind-all` — listen on every interface, the way builds before this one did.
   For the hobbyist path only, on a network you trust.
@@ -152,6 +159,20 @@ end to end by `pkg/client/headless_bringup_test.go`, which drives this exact
 committed file through the real client → gRPC → `SetConfig` path against an
 in-process server: the profile loads, an unfilled one is refused with the
 sentence above, and `StartLink` is called with the profile's own `tx.port`.
+
+The command that runs it on a clean checkout is:
+
+```sh
+go test ./pkg/...          # and go test -race ./pkg/... for the concurrency work
+```
+
+**not** `go test ./...`. Everything under `cmd/` and `webapp/` embeds the built
+web bundle (`webapp/fs.go`, `//go:embed dist/*`), which does not exist until
+`go generate ./...` has run npm and webpack — so `go build ./...`,
+`go vet ./...` and `go test ./...` all exit non-zero on a fresh clone with
+`pattern dist/*: no matching files found`. That is true at this branch's base
+too, and CI runs `go generate` first, so it is a checkout-shape fact rather
+than a regression. No package under `pkg/` depends on the bundle.
 
 What those tests do **not** prove, because no test can: that a radio answered.
 `StartLink` is recorded rather than executed there — no serial port is opened —
