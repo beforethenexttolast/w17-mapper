@@ -128,6 +128,35 @@ func Init(txServerPortName, configFilePath string, txServerPortBaudRate, grpcPor
 		}
 
 		fmt.Printf("%v", res)
+
+		// W17 fork addition (MAP-2, owner decision OD-5(a)): start the RF link
+		// from the profile the operator just loaded.
+		//
+		// Nothing did this before, so launching the mapper -- by hand or from
+		// race day -- applied a config and then sat there transmitting nothing.
+		// StartLink ran only when -tx-serial-port-name was passed, and race day
+		// cannot pass it: the ground station builds mapper argv from a pure
+		// whitelist carrying exactly one flag, -config-file-path, pinned by two
+		// of its own tests. The only remaining way to start transmitting was the
+		// mapper's own web UI -- the hobbyist step this fork's whole product
+		// promise removes. So the "running" card meant "the process started",
+		// never "frames are on the wire".
+		//
+		// The port comes from the profile's own tx.port because that is the only
+		// port that can work: the send loop resolves channels by matching the
+		// transmitter's port name, so a link on any other port transmits nothing
+		// anyway. The baud rate comes from -tx-serial-port-baud-rate (default
+		// 921600) because the config schema has no baud field.
+		//
+		// This runs strictly AFTER the placeholder refusal above, which is what
+		// keeps it from ever opening "REPLACE-WITH-COM-PORT", and after SetConfig
+		// has returned, which since the adoption fix means the config is live
+		// before the first frame can go out.
+		if !startLinkRequested {
+			if err = selfStartLink(ctx, client, doc, txServerPortBaudRate); err != nil {
+				return err
+			}
+		}
 	}
 
 	if disableWebUI {
@@ -138,5 +167,49 @@ func Init(txServerPortName, configFilePath string, txServerPortBaudRate, grpcPor
 		fmt.Printf("%v", res)
 	}
 
+	return nil
+}
+
+// selfStartLink starts the RF link on the port the just-loaded profile names.
+// W17 fork addition (MAP-2 / OD-5(a)); see the call site for why.
+//
+// It is deliberately quiet and non-fatal about the shapes it cannot decide:
+// a config with no transmitter has no link to start, and a config with several
+// is a multi-radio rig this fork does not ship -- link.StartSupervisor serves
+// exactly one port at a time, so guessing which one would be worse than saying
+// so. Both print a line and carry on; only a link that was asked for and
+// FAILED is an error, because that is the case where the operator thinks the
+// car is live and it is not.
+func selfStartLink(ctx context.Context, client pb.JoystickControlClient, doc map[string]any, baudRate int) error {
+	ports := cc.TransmitterPorts(doc)
+
+	switch {
+	case len(ports) == 0:
+		fmt.Println("(bring-up) the saved profile declares no transmitter, so there is no radio link to start")
+		return nil
+	case len(ports) > 1:
+		fmt.Printf("(bring-up) the saved profile declares %d transmitters (%v); "+
+			"this build starts one radio link at a time, so none was started automatically\n",
+			len(ports), ports)
+		return nil
+	}
+
+	if baudRate <= 0 {
+		return fmt.Errorf("the radio link on %s could not be started: the baud rate is %d "+
+			"(pass -tx-serial-port-baud-rate, or leave it at its 921600 default)", ports[0], baudRate)
+	}
+
+	fmt.Printf("(bring-up) starting the radio link on %s at %d baud, from the saved profile\n",
+		ports[0], baudRate)
+
+	res, err := client.StartLink(ctx, &pb.StartLinkReq{
+		Port:     ports[0],
+		BaudRate: int32(baudRate),
+	})
+	if err != nil {
+		return fmt.Errorf("the radio link on %s could not be started: %w", ports[0], err)
+	}
+
+	fmt.Printf("%v", res)
 	return nil
 }

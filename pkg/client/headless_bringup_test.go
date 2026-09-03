@@ -159,6 +159,78 @@ func TestW17ProfileHeadlessBringup(t *testing.T) {
 	}
 }
 
+// TestW17ProfileHeadlessBringupStartsTheLink is the MAP-2 gate (owner decision
+// OD-5(a)): loading a profile must also START TRANSMITTING, on the port the
+// profile itself names.
+//
+// Race day cannot say the port out loud -- the ground station builds mapper
+// argv from a pure whitelist carrying only -config-file-path, pinned by two of
+// its own tests -- so before this, one press of RACE DAY produced a process
+// that had a config and sent nothing, while the card said "running".
+func TestW17ProfileHeadlessBringupStartsTheLink(t *testing.T) {
+	rec, _, port := startMapper(t)
+
+	if err := Init("", filledProfile(t), benchBaudRate, port, false); err != nil {
+		t.Fatalf("bring-up failed: %v", err)
+	}
+
+	calls := rec.links()
+	if len(calls) != 1 {
+		t.Fatalf("loading a profile must start exactly one radio link, got %d", len(calls))
+	}
+	if calls[0].GetPort() != benchPort {
+		t.Errorf("the link must be started on the profile's own tx.port %q, got %q",
+			benchPort, calls[0].GetPort())
+	}
+	if calls[0].GetBaudRate() != benchBaudRate {
+		t.Errorf("baud rate = %d, want %d", calls[0].GetBaudRate(), benchBaudRate)
+	}
+}
+
+// TestHeadlessBringupDoesNotDoubleStartTheLink keeps the hobbyist path intact:
+// when -tx-serial-port-name IS given, that explicit request is the only one --
+// the self-start must not add a second StartLink the supervisor would refuse
+// with "link is already active".
+func TestHeadlessBringupDoesNotDoubleStartTheLink(t *testing.T) {
+	rec, _, port := startMapper(t)
+
+	if err := Init("COM9", filledProfile(t), benchBaudRate, port, false); err != nil {
+		t.Fatalf("bring-up failed: %v", err)
+	}
+
+	calls := rec.links()
+	if len(calls) != 1 {
+		t.Fatalf("an explicit -tx-serial-port-name must start exactly one link, got %d", len(calls))
+	}
+	if calls[0].GetPort() != "COM9" {
+		t.Errorf("the explicit flag must win, got %q", calls[0].GetPort())
+	}
+}
+
+// TestHeadlessBringupWithoutATransmitterStartsNothing covers the shape this
+// fork does not ship but upstream users do: a config with no tx node has no
+// link to start, and that is not an error.
+func TestHeadlessBringupWithoutATransmitterStartsNothing(t *testing.T) {
+	rec, configCtl, port := startMapper(t)
+
+	path := filepath.Join(t.TempDir(), "no-tx.json")
+	if err := os.WriteFile(path, []byte(
+		`{"config":{"input_output_map":{"n":{"id":"n","type":"number","number":{"output":0}}}}}`,
+	), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if err := Init("", path, benchBaudRate, port, false); err != nil {
+		t.Fatalf("a config with no transmitter must still load: %v", err)
+	}
+	if configCtl.Config == nil {
+		t.Error("the config should have been applied")
+	}
+	if calls := rec.links(); len(calls) != 0 {
+		t.Errorf("there is no port to start; got StartLink%v", calls)
+	}
+}
+
 // TestHeadlessBringupRefusesUnfilledProfile is the MAP-5 gate (owner decision
 // OD-9/D3): the profile AS SHIPPED, still carrying both placeholders, must be
 // refused with one plain sentence rather than loaded and silently inert.
