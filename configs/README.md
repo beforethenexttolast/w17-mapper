@@ -10,24 +10,76 @@ edit that breaks any of that fails the suite.
 ## Loading
 
 ```sh
-elrs-joystick-control \
-  -config-file-path configs/w17-ds4.json \
-  -tx-serial-port-name COM5 -tx-serial-port-baud-rate 921600
+elrs-joystick-control -config-file-path configs/w17-ds4.json
 ```
 
-The config is applied through the same gRPC `SetConfig` the editor uses, so
-it passes the same schema validation, the read-cycle check, and the W17
-plausibility lint (`(config-lint)` warnings in the log — the shipped profile
-must produce none).
+One flag. The profile's own `tx.port` is the port, so it does not have to be
+repeated on the command line: after the config is applied, the mapper starts
+the RF link on that port itself, at the `-tx-serial-port-baud-rate` default
+(921600). This is owner decision **OD-5(a)**, and it is what lets the ground
+station launch the mapper with the single flag its argv whitelist carries.
 
-**Two values are machine-specific and shipped as placeholders. The profile is
-fail-safe until both are set** (an unresolvable pad keeps every channel at its
-failsafe: arm stays at the 172 disarm rail).
+An explicit `-tx-serial-port-name` still wins outright — the hobbyist path is
+unchanged, and no second link is started.
+
+The config is applied through the same gRPC `SetConfig` the editor uses, so
+it passes the same schema validation, the read-cycle check, the placeholder
+refusal below, and the W17 plausibility lint (`(config-lint)` warnings in the
+log — the shipped profile must produce none).
+
+Bring-up happens in this exact order, and the order is load-bearing:
+
+1. the file's `{"config": …}` wrapper is unwrapped (the RPC carries the config
+   *object*; the server re-wraps it before validating);
+2. any unfilled `REPLACE-WITH-*` placeholder is **refused**;
+3. only then is the link started — which is why the self-start can never open
+   the literal string `REPLACE-WITH-COM-PORT`.
+
+### The two placeholders — and the refusal
+
+**Two values are machine-specific and shipped as placeholders.**
 
 | Placeholder | Where | Replace with |
 |---|---|---|
 | `REPLACE-WITH-DS4-ID` | every `gamepad.id` | the pad's id from the mapper UI gamepad list (an md5-derived 6-char hash of the SDL GUID+name — device-specific, so it cannot be committed) |
-| `REPLACE-WITH-COM-PORT` | `tx.port` | the ELRS TX serial port (e.g. `COM5`); must equal `-tx-serial-port-name` or the send loop resolves no channels |
+| `REPLACE-WITH-COM-PORT` | `tx.port` | the ELRS TX serial port (e.g. `COM5`) — this is also the port the link is started on |
+
+**A profile with either placeholder still in it is REFUSED, not loaded**
+(owner decision OD-9/D3). Both load paths refuse it — the headless
+`-config-file-path` bring-up and the editor's Apply — with one sentence:
+
+```
+this saved profile has not been matched to this computer yet: it still contains
+the placeholder values "REPLACE-WITH-COM-PORT", "REPLACE-WITH-DS4-ID", which
+have to be replaced with the real ones for this machine before the car can be
+driven -- see configs/README.md
+```
+
+Before this, an unfilled profile *loaded*. The state was fail-safe — an
+unresolvable pad keeps every channel at its failsafe and arm stays on the 172
+disarm rail — but completely silent: the placeholders are legal strings, so the
+schema, the cycle check, the lint, the profile tests and the ground station's
+pre-launch checks all accepted them, and the only symptom was a car that would
+not move.
+
+The committed file must **keep** both placeholders; a test fails if a
+bench-filled copy is ever committed.
+
+## Ports the mapper opens
+
+Both listeners bind **loopback only** by default (owner decision OD-8(a)):
+`127.0.0.1:10000` for gRPC and `127.0.0.1:3000` for the web UI. Neither is
+authenticated, and on race day the laptop hosts the phone's Wi-Fi hotspot, so
+"reachable from the network" is not hypothetical. Every legitimate client is
+local — the ground station dials `127.0.0.1:10000` — so the default costs
+nothing.
+
+- `-bind-host <ip>` — listen somewhere else.
+- `-bind-all` — listen on every interface, the way builds before this one did.
+  For the hobbyist path only, on a network you trust.
+- `-pprof` — mount the Go profiling handlers on the web-UI port. **Off by
+  default**: a single CPU-profile request stalls the process that is driving
+  the car.
 
 ## Packaged release
 
@@ -88,32 +140,18 @@ bundle anywhere on the Windows PC, point:
 - **drive program** → `...\w17-mapper-windows-amd64\elrs-joystick-control.exe`
 - **saved profile** → `...\w17-mapper-windows-amd64\configs\w17-ds4.json`
 
-**Known issue, today's truth (`[fix-wave: MAP-1]`).** The exact invocation
-this README's `Loading` section documents, and the one race day performs
-above, currently **panics the process**: `pkg/client/grpc_client.go` wraps
-the file's decoded document in a second `{"config": ...}` envelope before
-calling `SetConfig`, and `configs/w17-ds4.json` already carries that top-level
-wrapper, so the doubled document fails `pkg/config/schema.yaml` validation,
-the server returns `InvalidArgument`, and the client panics
-(`pkg/client/grpc_client.go:57-63`). `pkg/config/w17_profile_test.go:28`
-never catches this because it decodes the file with `json.Unmarshal` directly
-rather than driving it through `client.Init` → `SetConfig`. Not fixed by this
-packaging change — tracked as review finding MAP-1 for a separate fix wave.
+**What is proven, and what is still owed.** The bring-up above is covered
+end to end by `pkg/client/headless_bringup_test.go`, which drives this exact
+committed file through the real client → gRPC → `SetConfig` path against an
+in-process server: the profile loads, an unfilled one is refused with the
+sentence above, and `StartLink` is called with the profile's own `tx.port`.
 
-**Known issue, today's truth (`[fix-wave: MAP-2]`).** Even once a config
-loads, launching the mapper — by hand or via race day — does not by itself
-start transmitting CRSF frames: `StartLink` only runs when
-`-tx-serial-port-name` is passed (`pkg/client/grpc_client.go:35`), and race
-day's `MAPPER_ARG_WHITELIST` carries only `-config-file-path`
-(`w17-ground-station/main/raceDayOrchestrator.js:44`) — nothing else calls
-`StartLink` for it. "Running" on the race-day card today means "the process
-started", not "frames are on the wire"; verify with a bench check (CRSF
-frames observed on the wire after one button press) before trusting it.
-Today's only way to actually start the link is the mapper's own web UI's RF
-Link panel (Start Link button,
-`webapp/src/components/pages/home/misc/RFLinkManager.jsx`) at
-`http://localhost:3000` — bench operators use that escape hatch now.
-Tracked as review finding MAP-2 for a separate fix wave.
+What those tests do **not** prove, because no test can: that a radio answered.
+`StartLink` is recorded rather than executed there — no serial port is opened —
+so **"CRSF frames observed on the wire after one RACE DAY press" remains an
+owed bench check** `[bench-TBD]`, together with the reconnect behaviour after a
+real unplug/replug. Until that check is done, treat "the link was started" as
+"the mapper asked for the right port", not as "the car is hearing it".
 
 ## Channel map (firmware truth: control-fw `lib/channels` at `3f4f9b7`)
 

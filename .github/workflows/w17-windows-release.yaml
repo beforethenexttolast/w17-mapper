@@ -98,11 +98,10 @@ jobs:
 
           # Generated at package time (not a tracked file) so it can carry the
           # exact ref/commit this bundle was built from. Content is the
-          # honest state of the mapper's race-day path as of this build,
-          # including the two confirmed review findings that are NOT fixed by
-          # this workflow (they are code changes, tracked separately) — see
-          # FORK-NOTICE.md's provenance table for the commits that fix them
-          # once they land.
+          # honest state of the mapper's race-day path as of this build:
+          # what the automated tests prove, and what is still owed on a bench
+          # with real hardware — see FORK-NOTICE.md's provenance table for the
+          # commits behind each statement.
           @"
           W17 Mapper -- Windows Release Bundle
           =====================================
@@ -129,12 +128,20 @@ jobs:
 
           Quickstart (manual / bench use)
           --------------------------------
-            elrs-joystick-control.exe -config-file-path configs\w17-ds4.json ^
-                -tx-serial-port-name COM5 -tx-serial-port-baud-rate 921600
+            elrs-joystick-control.exe -config-file-path configs\w17-ds4.json
+
+          One flag: the profile's own tx.port is the port, and the mapper
+          starts the RF link on it once the config is applied (owner decision
+          OD-5(a)). An explicit -tx-serial-port-name still overrides it.
 
           Before first use, replace the two placeholders in configs\w17-ds4.json:
             REPLACE-WITH-DS4-ID   -> the pad's id from the mapper's own web UI gamepad list
-            REPLACE-WITH-COM-PORT -> the ELRS TX serial port (must equal -tx-serial-port-name)
+            REPLACE-WITH-COM-PORT -> the ELRS TX serial port; this is also the
+                                     port the link is started on
+
+          A profile that still contains either placeholder is REFUSED, not
+          loaded, with a plain sentence saying the profile has not been matched
+          to this computer yet (owner decision OD-9/D3).
 
           How the ground station uses this bundle
           ----------------------------------------
@@ -152,26 +159,18 @@ jobs:
           OS-absolute paths -- a relative value is refused before launch
           (raceDayOrchestrator.js:60-69).
 
-          Known issues in today's code (tracked, not fixed by this bundle)
-          -------------------------------------------------------------------
-            [fix-wave: MAP-1] The "-config-file-path" load above currently
-            PANICS the process: the client wraps the profile's document in a
-            second {"config": ...} envelope before sending it, and the
-            committed profile already carries that wrapper, so the doubled
-            document fails schema validation and the process exits.
+          Owed bench checks (not provable in software)
+          --------------------------------------------
+            The headless bring-up is covered end to end by automated tests:
+            the committed profile loads through the real gRPC path, an
+            unfilled one is refused, and StartLink is called with the
+            profile's own tx.port. Those tests do not open a serial port, so
+            what they cannot show is that a radio answered.
 
-            [fix-wave: MAP-2] Launching the mapper -- by hand or via race day
-            -- does not by itself start transmitting CRSF frames: nothing
-            calls StartLink unless -tx-serial-port-name is also passed, which
-            race day's own launch does not do today. "Running" on the
-            race-day card currently means "the process started", not "frames
-            are on the wire" -- verify with a bench check before trusting it.
-            Today's ONLY way to actually start the link is the mapper's own
-            web UI at http://localhost:3000 -- its RF Link panel picks the
-            serial port and has its own Start Link button
-            (webapp/src/components/pages/home/misc/RFLinkManager.jsx) --
-            bench operators use this escape hatch now; it is also why MAP-8
-            below matters even before MAP-2 is fixed.
+            STILL OWED: CRSF frames observed on the wire after one RACE DAY
+            press, and reconnect behaviour after a real unplug/replug of the
+            transmitter. Until then, "the link was started" means "the mapper
+            asked for the right port", not "the car is hearing it".
 
           Safety
           ------
@@ -181,21 +180,18 @@ jobs:
           FORK-NOTICE.md's "Safety boundary" section for the full statement
           and the push-review rule that guards it.
 
-          [fix-wave: MAP-8] Separately, this binary opens two unauthenticated
-          listeners on ALL network interfaces, not just localhost: the gRPC
-          control service on :10000 with server reflection enabled
-          (pkg/server/controller.go:81), and the grpc-web node-graph editor
-          on :3000 (pkg/http/controller.go:65). Anyone who can reach the PC's
-          IP on the same network -- e.g. the race-day Wi-Fi hotspot the
-          ground station and phone HUD also share -- can call SetConfig,
-          StartLink, StopLink and SetCRSFDeviceField with no credentials.
-          There is no mitigation to hand the giftee today: the exe has a
-          -disable-web-ui flag (cmd/elrs-joystick-control/main.go:57), but
-          the ground station's race-day launch never passes it
-          (w17-ground-station main/raceDayOrchestrator.js:44 --
-          MAPPER_ARG_WHITELIST carries only -config-file-path). Not fixed by
-          this packaging change -- tracked as review finding MAP-8 for a
-          separate fix wave (bind loopback by default).
+          Network exposure. This binary opens two listeners, and NEITHER is
+          authenticated: the gRPC control service on :10000 (with server
+          reflection) and the grpc-web node-graph editor on :3000. Both bind
+          LOOPBACK ONLY by default (owner decision OD-8(a)), so they are
+          reachable from this PC and nowhere else -- which matters because on
+          race day this PC hosts the Wi-Fi hotspot the phone HUD joins. The Go
+          profiling handlers are likewise off unless -pprof is passed.
+
+          -bind-all restores the old all-interfaces behaviour in one flag.
+          Anyone who can then reach this PC's IP can call SetConfig,
+          StartLink, StopLink and SetCRSFDeviceField with no credentials, so
+          use it only on a network you trust.
 
           Provenance
           ----------
