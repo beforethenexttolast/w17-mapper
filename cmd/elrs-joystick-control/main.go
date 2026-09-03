@@ -61,8 +61,15 @@ func main() {
 	txServerPortBaudRate := new(int)
 	flag.IntVar(txServerPortBaudRate, "tx-serial-port-baud-rate", 921600, "tx Serial port baud rate")
 
+	// W17 fork modification (owner ruling OD-9/D2 addendum): the help text says
+	// the requirement, because the refusal it produces is otherwise a surprise.
+	// This flag is the car's own bring-up path and refuses a profile that does
+	// not declare `"w17_profile": true`; other rigs' configs load in the web
+	// editor, which is unchanged.
 	configFilePath := new(string)
-	flag.StringVar(configFilePath, "config-file-path", "", "config json file path")
+	flag.StringVar(configFilePath, "config-file-path", "",
+		"saved profile to load at start-up; it must declare \"w17_profile\": true "+
+			"(load other rigs' configs in the web editor instead)")
 
 	disableWebUI := new(bool)
 	flag.BoolVar(disableWebUI, "disable-web-ui", false, "disable the Web-UI HTTP server")
