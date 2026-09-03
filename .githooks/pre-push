@@ -130,6 +130,22 @@
 #       also declaring enum HeadIntentState            and two files declaring
 #                                                    the enum is itself a
 #                                                    refusal.
+# Probes written against the NEW paths in the same session (self-review, same
+# method):
+#   A6  a value split over two lines              -> REFUSED (unparseable)
+#   A7  option allow_alias + a duplicate value 8  -> REFUSED (declared twice)
+#   A8  the `{` on the line after the enum name   -> REFUSED (matched the file,
+#                                                    could not read the block)
+#   A9  a second enum HeadIntentState block in    -> REFUSED (opened twice)
+#       the same file
+#   A10 `reserved 9 to max;` + a comment inside   -> ALLOWED (neither declares
+#       the block                                    a value)
+#   A11 tabs around the `=` and the value         -> REFUSED (read, then the
+#                                                    name rule caught it)
+#   A12 `... = 9; }` closing the block on an      -> REFUSED (one statement per
+#       otherwise well-formed value line             line, ending in its `;`)
+#   A13 `... = 8; } enum HeadIntentState { ...`   -> REFUSED (same rule; this
+#       all on one line                              is why that rule exists)
 # False-positive surface of check 4, measured over the in-scope globs at
 # 9ba6e06 (120 .go, 2 .proto, 2 .sh, 8 .yaml, no vendor/): ZERO hits. The .sh
 # count was published as 3 and was wrong (review finding MAP-16): that tree
@@ -138,9 +154,12 @@
 # 151 .go, 2 .proto, 2 .sh, 9 .yaml, no vendor/, still ZERO hits. That number
 # was first published as 150, which is the count at 50878c8's PARENT bc90f44
 # (this file's own review finding, one line below the MAP-16 it corrects).
-# Counts are stated WITH the commit they were taken at, because they move with
-# every added file; the last row of FORK-NOTICE.md §5(a) carries the
-# re-measurement for this branch's tip. Tree-wide
+# Re-measured again at `24cb50c`, the last commit on this branch that changes a
+# file in scope (155 .go, 2 .proto, 2 .sh, 9 .yaml, no vendor/): still ZERO
+# hits. Counts are stated WITH the commit they were taken at, because they move
+# with every added file -- and the commits after 24cb50c touch only .md and this
+# file, neither of which is in scope, so the number holds at the branch tip.
+# Tree-wide
 # only FORK-NOTICE.md and this file match, and neither is in scope — the globs
 # are code-only, `.md` is not listed and `pre-push` is not `*.sh`. Prose that
 # documents the boundary by name stays exempt BY SCOPE; do not widen the globs
