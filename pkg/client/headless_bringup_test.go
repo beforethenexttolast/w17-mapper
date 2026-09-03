@@ -143,7 +143,7 @@ func startMapper(t *testing.T) (rec *recordingServer, configCtl *cc.Controller, 
 func TestW17ProfileHeadlessBringup(t *testing.T) {
 	_, configCtl, port := startMapper(t)
 
-	if err := Init("", filledProfile(t), benchBaudRate, port, false); err != nil {
+	if err := Init(server.DefaultBindHost, "", filledProfile(t), benchBaudRate, port, false); err != nil {
 		t.Fatalf("the committed profile must load through the headless path: %v", err)
 	}
 
@@ -170,7 +170,7 @@ func TestW17ProfileHeadlessBringup(t *testing.T) {
 func TestW17ProfileHeadlessBringupStartsTheLink(t *testing.T) {
 	rec, _, port := startMapper(t)
 
-	if err := Init("", filledProfile(t), benchBaudRate, port, false); err != nil {
+	if err := Init(server.DefaultBindHost, "", filledProfile(t), benchBaudRate, port, false); err != nil {
 		t.Fatalf("bring-up failed: %v", err)
 	}
 
@@ -194,7 +194,7 @@ func TestW17ProfileHeadlessBringupStartsTheLink(t *testing.T) {
 func TestHeadlessBringupDoesNotDoubleStartTheLink(t *testing.T) {
 	rec, _, port := startMapper(t)
 
-	if err := Init("COM9", filledProfile(t), benchBaudRate, port, false); err != nil {
+	if err := Init(server.DefaultBindHost, "COM9", filledProfile(t), benchBaudRate, port, false); err != nil {
 		t.Fatalf("bring-up failed: %v", err)
 	}
 
@@ -220,7 +220,7 @@ func TestHeadlessBringupWithoutATransmitterStartsNothing(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	if err := Init("", path, benchBaudRate, port, false); err != nil {
+	if err := Init(server.DefaultBindHost, "", path, benchBaudRate, port, false); err != nil {
 		t.Fatalf("a config with no transmitter must still load: %v", err)
 	}
 	if configCtl.Config == nil {
@@ -241,7 +241,7 @@ func TestHeadlessBringupWithoutATransmitterStartsNothing(t *testing.T) {
 func TestHeadlessBringupRefusesUnfilledProfile(t *testing.T) {
 	rec, configCtl, port := startMapper(t)
 
-	err := Init("", w17ProfilePath, benchBaudRate, port, false)
+	err := Init(server.DefaultBindHost, "", w17ProfilePath, benchBaudRate, port, false)
 	if err == nil {
 		t.Fatal("the shipped profile still has placeholders in it and must be refused")
 	}

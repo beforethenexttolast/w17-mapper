@@ -12,6 +12,8 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/ttys3/echo-pprof/v4"
+	"net"
+	"strconv"
 	"time"
 
 	"google.golang.org/grpc"
@@ -30,6 +32,17 @@ type Controller struct {
 	echo       *echo.Echo
 	gRPCServer *grpc.Server
 
+	// bindHost is the interface the web UI listens on; empty means every
+	// interface (the explicit -bind-all path). W17 fork modification (MAP-8).
+	bindHost string
+
+	// enablePprof registers the runtime profiling handlers. W17 fork
+	// modification (MAP-8, OD-8(a)): OFF unless asked for. They were mounted
+	// unconditionally on a port that bound every interface with CORS *, and a
+	// CPU profile request alone is enough to stall the process that is driving
+	// the car.
+	enablePprof bool
+
 	// assets is the built web bundle this server serves, or nil to serve no
 	// static content at all. W17 fork modification: the bundle used to be
 	// imported here directly (webapp.HTTPFileSystem), which made pkg/http --
@@ -39,11 +52,13 @@ type Controller struct {
 	assets http.FileSystem
 }
 
-func NewCtl(webAppPort int, gRPCServer *grpc.Server, assets http.FileSystem) *Controller {
+func NewCtl(bindHost string, webAppPort int, gRPCServer *grpc.Server, assets http.FileSystem, enablePprof bool) *Controller {
 	httpCtl := &Controller{
-		webAppPort: webAppPort,
-		gRPCServer: gRPCServer,
-		assets:     assets,
+		webAppPort:  webAppPort,
+		bindHost:    bindHost,
+		gRPCServer:  gRPCServer,
+		assets:      assets,
+		enablePprof: enablePprof,
 	}
 
 	if err := httpCtl.Init(); err != nil {
@@ -67,11 +82,13 @@ func (c *Controller) NewEcho(err error) (*echo.Echo, error) {
 
 	echoHandler := echoServer
 	wrappedGrpc := grpcweb.WrapServer(c.gRPCServer)
-	echopprof.Wrap(echoHandler)
+	if c.enablePprof {
+		echopprof.Wrap(echoHandler)
+	}
 
 	//override server handler to intercept grpc-web requests (content-type: application/grpc-web)
 	echoServer.Server = &http.Server{
-		Addr: fmt.Sprintf(":%d", c.webAppPort),
+		Addr: net.JoinHostPort(c.bindHost, strconv.Itoa(c.webAppPort)),
 		Handler: http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
 			resp.Header().Set("Access-Control-Allow-Headers", "*")
 			resp.Header().Set("Access-Control-Allow-Origin", "*")
@@ -109,7 +126,8 @@ func (c *Controller) Start() (err error) {
 	c.httpTomb = &tomb.Tomb{}
 	c.httpTomb.Go(func() error {
 
-		fmt.Printf("⇨ http server started on [::]%s\n", c.echo.Server.Addr)
+		// The REAL address, not a hardcoded "[::]" claim.
+		fmt.Printf("⇨ http server started on %s\n", c.echo.Server.Addr)
 		if err := c.echo.Server.ListenAndServe(); err != http.ErrServerClosed {
 			fmt.Println("(http): server halted forcefully")
 			return err

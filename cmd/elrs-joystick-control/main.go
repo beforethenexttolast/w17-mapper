@@ -18,7 +18,6 @@ import (
 	"github.com/kaack/elrs-joystick-control/webapp"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
-	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"strconv"
@@ -67,6 +66,29 @@ func main() {
 	disableWebUI := new(bool)
 	flag.BoolVar(disableWebUI, "disable-web-ui", false, "disable the Web-UI HTTP server")
 
+	// W17 owned-fork addition (MAP-8, owner decision OD-8(a)): both listeners
+	// bind LOOPBACK by default. Upstream bound the wildcard on both -- gRPC
+	// with server reflection, and the grpc-web UI with CORS * -- unauthenticated
+	// and with no interceptor, on the machine that race day now makes the host
+	// of the phone's hotspot. Every legitimate client is local, so the default
+	// costs nothing; -bind-all is the one-flag way back for the hobbyist path
+	// where the mapper UI is opened from another machine.
+	bindHost := new(string)
+	flag.StringVar(bindHost, "bind-host", gc.DefaultBindHost,
+		"interface the gRPC and Web-UI ports listen on (loopback by default)")
+
+	bindAll := new(bool)
+	flag.BoolVar(bindAll, "bind-all", false,
+		"listen on EVERY interface instead of loopback -- the gRPC and Web-UI "+
+			"ports are unauthenticated, so only do this on a network you trust")
+
+	// W17 owned-fork addition (MAP-8): the runtime profiling handlers are off
+	// unless asked for. A CPU profile request is enough to stall the process
+	// driving the car, and they were mounted unconditionally.
+	enablePprof := new(bool)
+	flag.BoolVar(enablePprof, "pprof", false,
+		"expose Go runtime profiling handlers on the Web-UI port (diagnostics only)")
+
 	// W17 owned-fork addition (not upstream): disabled-by-default, LOG-ONLY
 	// head-intent receiver. Default comes from env W17_HEADTRACK_INGEST so it stays
 	// off unless explicitly opted in; an explicit -headtrack-ingest flag overrides.
@@ -82,6 +104,23 @@ func main() {
 		"UDP port for the LOG-ONLY head-intent receiver (only used with -headtrack-ingest)")
 
 	flag.Parse()
+
+	// -bind-all wins over -bind-host: an empty host is what net.JoinHostPort
+	// renders as ":port", i.e. every interface.
+	listenHost := *bindHost
+	if *bindAll {
+		listenHost = ""
+		fmt.Println("(bind) -bind-all: the gRPC and Web-UI ports will listen on EVERY " +
+			"interface, unauthenticated -- only do this on a network you trust")
+	}
+
+	// The headless bring-up talks to this same process, so it dials whatever
+	// this process bound; with -bind-all it dials loopback, which is always
+	// reachable from here.
+	clientHost := listenHost
+	if clientHost == "" {
+		clientHost = gc.DefaultBindHost
+	}
 
 	// --- W17 owned-fork addition: LOG-ONLY head-intent receiver (UDP 5602, W3) ---
 	// When enabled this starts a headintent.Receiver plus a read-only diagnostics
@@ -125,7 +164,7 @@ func main() {
 		return
 	}
 
-	httpCtl := hc.NewCtl(*webAppPort, grpcServer, webAssets)
+	httpCtl := hc.NewCtl(listenHost, *webAppPort, grpcServer, webAssets, *enablePprof)
 	defer httpCtl.Quit()
 
 	devicesCtl := dc.NewCtl()
@@ -141,13 +180,13 @@ func main() {
 	linkCtl := lc.NewCtl(devicesCtl, serialCtl, configCtl)
 	defer linkCtl.Quit()
 
-	serverCtl := gc.NewCtl(*grpcPort, grpcServer, devicesCtl, serialCtl, configCtl, linkCtl, httpCtl, hiBroadcaster)
+	serverCtl := gc.NewCtl(listenHost, *grpcPort, grpcServer, devicesCtl, serialCtl, configCtl, linkCtl, httpCtl, hiBroadcaster)
 	defer serverCtl.Quit()
 
 	// Automatically configure through gprc when conditions are met.
 	// W17 fork modification: Init returns an error instead of panicking, so a
 	// bring-up failure prints one readable line rather than a goroutine dump.
-	if err := client.Init(*txServerPortName, *configFilePath, *txServerPortBaudRate, *grpcPort, *disableWebUI); err != nil {
+	if err := client.Init(clientHost, *txServerPortName, *configFilePath, *txServerPortBaudRate, *grpcPort, *disableWebUI); err != nil {
 		fmt.Printf("\n%s\n\n", err.Error())
 		exitCode = 1
 		return

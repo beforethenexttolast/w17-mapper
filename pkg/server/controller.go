@@ -16,7 +16,32 @@ import (
 	"google.golang.org/grpc"
 	"gopkg.in/tomb.v2"
 	"net"
+	"strconv"
 )
+
+// DefaultBindHost is the interface the mapper's own ports listen on unless the
+// operator explicitly asks for more. W17 fork modification (MAP-8, owner
+// decision OD-8(a)).
+//
+// Upstream bound the wildcard: gRPC :10000 WITH SERVER REFLECTION, and the
+// grpc-web UI :3000 with Access-Control-Allow-Origin *, both unauthenticated,
+// with no interceptor of any kind, exposing SetConfig / StartLink / StopLink /
+// SetCRSFDeviceField to anything that could reach the machine. Race day now
+// makes that machine the host of the phone's hotspot, which is a network the
+// giftee's phone -- and whatever else joins it -- sits on.
+//
+// A loopback default costs nothing, because every legitimate client is already
+// local: pkg/client dials the loopback address, and the ground station dials
+// 127.0.0.1:10000. -bind-all restores the old behaviour in one flag for the
+// hobbyist path, where the mapper's own UI is opened from another machine.
+const DefaultBindHost = "127.0.0.1"
+
+// listenAddr composes a listen address. An EMPTY host means every interface --
+// the explicit -bind-all path -- which is exactly what net.JoinHostPort renders
+// as ":port".
+func listenAddr(host string, port int) string {
+	return net.JoinHostPort(host, strconv.Itoa(port))
+}
 
 // HTTPController is the web-UI lifecycle the gRPC layer drives, as an
 // INTERFACE rather than the concrete *pkg/http.Controller. W17 fork
@@ -38,6 +63,7 @@ type HTTPController interface {
 
 type Controller struct {
 	gRPCPort   int
+	bindHost   string
 	gRPCServer *grpc.Server
 	devicesCtl *dc.Controller
 	serialCtl  *sc.Controller
@@ -53,9 +79,10 @@ type Controller struct {
 // head-intent diagnostics source; pass nil when head-intent ingest is disabled
 // (the WatchHeadIntentDiagnostics RPC then reports Unavailable). It is a
 // diagnostics consumer only and carries no control path.
-func NewCtl(gRPCPort int, gRPCServer *grpc.Server, devicesCtl *dc.Controller, serialCtl *sc.Controller, configCtl *cc.Controller, linkCtl *lc.Controller, httpCtl HTTPController, headIntent *headintent.Broadcaster) *Controller {
+func NewCtl(bindHost string, gRPCPort int, gRPCServer *grpc.Server, devicesCtl *dc.Controller, serialCtl *sc.Controller, configCtl *cc.Controller, linkCtl *lc.Controller, httpCtl HTTPController, headIntent *headintent.Broadcaster) *Controller {
 	serverCtl := &Controller{
 		gRPCPort:   gRPCPort,
+		bindHost:   bindHost,
 		gRPCServer: gRPCServer,
 		devicesCtl: devicesCtl,
 		serialCtl:  serialCtl,
@@ -95,12 +122,15 @@ func (c *Controller) Start() (err error) {
 			HeadIntent: c.headIntent,
 		})
 
-		lis, err := net.Listen("tcp", fmt.Sprintf(":%d", c.gRPCPort))
+		addr := listenAddr(c.bindHost, c.gRPCPort)
+		lis, err := net.Listen("tcp", addr)
 		if err != nil {
-			return errors.New(fmt.Sprintf("could not listen on http port %d. %v", c.gRPCPort, err))
+			return errors.New(fmt.Sprintf("could not listen on %s. %v", addr, err))
 		}
 
-		fmt.Printf("⇨ gRPC server started on [::]:%d\n", c.gRPCPort)
+		// The REAL address, not a hardcoded claim: the old line said "[::]"
+		// whatever it had actually bound.
+		fmt.Printf("⇨ gRPC server started on %s\n", lis.Addr().String())
 		if err = c.gRPCServer.Serve(lis); err != nil {
 			return errors.New(fmt.Sprintf("could not serve gRPC on port %d. %v", c.gRPCPort, err))
 		}

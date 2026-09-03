@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
+	"strconv"
 	"time"
 
 	cc "github.com/kaack/elrs-joystick-control/pkg/config"
@@ -71,7 +73,7 @@ func configPayload(configJson []byte) (*structpb.Struct, map[string]any, error) 
 // -- a missing file, an unfilled profile, a COM port that is not there -- and
 // a Go panic answers with a goroutine dump instead of a sentence. main prints
 // the message and exits non-zero after its normal shutdown.
-func Init(txServerPortName, configFilePath string, txServerPortBaudRate, grpcPort int, disableWebUI bool) error {
+func Init(grpcHost, txServerPortName, configFilePath string, txServerPortBaudRate, grpcPort int, disableWebUI bool) error {
 	startLinkRequested := len(txServerPortName) != 0 && txServerPortBaudRate != 0
 	if !startLinkRequested && len(configFilePath) == 0 && !disableWebUI {
 		return nil
@@ -80,10 +82,16 @@ func Init(txServerPortName, configFilePath string, txServerPortBaudRate, grpcPor
 	ctx, cancel := context.WithTimeout(context.Background(), initTimeout)
 	defer cancel()
 
-	conn, err := grpc.DialContext(ctx, fmt.Sprintf("localhost:%d", grpcPort),
+	// W17 fork modification (MAP-8): dial the host this process actually bound,
+	// rather than the name "localhost". With the loopback default those are the
+	// same machine but not always the same ADDRESS -- "localhost" resolves to
+	// ::1 first on many systems, while the server binds 127.0.0.1 -- and with
+	// -bind-host they need not agree at all.
+	target := net.JoinHostPort(grpcHost, strconv.Itoa(grpcPort))
+	conn, err := grpc.DialContext(ctx, target,
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return fmt.Errorf("could not reach the drive program's own control port %d: %w", grpcPort, err)
+		return fmt.Errorf("could not reach the drive program's own control port at %s: %w", target, err)
 	}
 	defer conn.Close()
 
