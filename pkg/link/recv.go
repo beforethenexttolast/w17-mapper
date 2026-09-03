@@ -24,6 +24,51 @@ type frameReader interface {
 	Next(t *tomb.Tomb) (telem.TelemType, error)
 }
 
+// recvClock is the recv loop's source of time: the tick that paces it and the
+// "now" its two inactivity comparisons are made against. W17 fork addition
+// (branch B).
+//
+// WHY IT EXISTS. maxInactivityTime is 2 ms at 921600 baud (four 500 us refresh
+// periods), and the keepalive rule is a comparison between that and elapsed
+// WALL time. Under `go test`, an ordinary goroutine reschedule or a GC pause is
+// routinely longer than 2 ms, so a test that drives the real loop for a real
+// 100 ms and then asserts "no keepalive fired" is asserting that the Go
+// scheduler never paused this goroutine for 2 ms -- which it does not promise.
+// TestKeepaliveStaysQuietWhileTelemetryFlows failed roughly two runs in three
+// under `go test -race -count=20 ./pkg/link` on this Mac for exactly that
+// reason, with 1-2 keepalives against an expected 0. That is a defect in the
+// test, not in the loop: the loop's decision is correct at every instant it is
+// actually scheduled.
+//
+// Injecting the clock lets the timing test step time itself, so the assertion
+// becomes "given these instants, the loop asks for no keepalive" -- a property
+// of the rule, decided by arithmetic and not by the scheduler.
+//
+// It changes nothing in production: recvLoop builds a wallClock, whose Now is
+// time.Now and whose ticks come from a time.Ticker at the same refresh rate the
+// loop always used.
+type recvClock interface {
+	// Now is the instant the loop measures inactivity against.
+	Now() time.Time
+	// Ticks paces the loop, one receive per refresh period.
+	Ticks() <-chan time.Time
+	// Stop releases the tick source. Called once, on loop exit.
+	Stop()
+}
+
+// wallClock is the production recvClock: real time, real ticker.
+type wallClock struct {
+	ticker *time.Ticker
+}
+
+func newWallClock(refreshRate time.Duration) *wallClock {
+	return &wallClock{ticker: time.NewTicker(refreshRate)}
+}
+
+func (w *wallClock) Now() time.Time          { return time.Now() }
+func (w *wallClock) Ticks() <-chan time.Time { return w.ticker.C }
+func (w *wallClock) Stop()                   { w.ticker.Stop() }
+
 func (c *Controller) StartRecvLoop(port *serial.Port, sendChan chan any, recvChan chan any) error {
 
 	if c.recvLoopTomb != nil && c.recvLoopTomb.Alive() {
@@ -134,21 +179,31 @@ func (c *Controller) RecvLoop(port *serial.Port, sendChan chan any, recvChan cha
 	return c.recvLoop(port.BaudRate, telem.NewReader(port), sendChan, recvChan)
 }
 
-// recvLoop is RecvLoop with its telemetry source injected; see frameReader.
+// recvLoop is RecvLoop with its telemetry source injected; see frameReader. It
+// runs on the wall clock, exactly as the production loop always has.
 func (c *Controller) recvLoop(baudRate int32, reader frameReader, sendChan chan any, recvChan chan any) error {
+	return c.recvLoopClocked(baudRate, reader, nil, sendChan, recvChan)
+}
+
+// recvLoopClocked is recvLoop with its clock injected too; see recvClock. A nil
+// clock means the wall clock, so the production path is unchanged.
+func (c *Controller) recvLoopClocked(baudRate int32, reader frameReader, clock recvClock, sendChan chan any, recvChan chan any) error {
 	//time.Sleep(5 * time.Second)
 	refreshRate := crossfire.GetRefreshRate(baudRate)
 	maxInactivityTime := refreshRate * 4
 	fmt.Printf("(recv-loop) starting, refresh rate %v, max inactivity: %v\n", refreshRate, maxInactivityTime)
-	ticker := time.NewTicker(refreshRate)
-	defer ticker.Stop()
+	if clock == nil {
+		clock = newWallClock(refreshRate)
+	}
+	defer clock.Stop()
+	ticks := clock.Ticks()
 
 	telemPacketCount := 1
 	telemErrorCount := 0
 	tickCount := uint64(0)
-	currentTickTime := time.Now()
-	lastRecvTelemTime := time.Now()
-	lastSyncReqTime := time.Now()
+	currentTickTime := clock.Now()
+	lastRecvTelemTime := clock.Now()
+	lastSyncReqTime := clock.Now()
 
 	var tPacket telem.TelemType
 	var err error
@@ -173,9 +228,9 @@ Loop:
 				//no-op
 			}
 
-		case <-ticker.C:
+		case <-ticks:
 			tickCount += 1
-			currentTickTime = time.Now()
+			currentTickTime = clock.Now()
 
 			// W17 fork modification (MAP-10): compare like with like. Both
 			// elapsed times used to be divided by time.Millisecond before being
@@ -208,7 +263,7 @@ Loop:
 					break
 				}
 
-				if due, skipped := readErrorLog.due(time.Now()); due {
+				if due, skipped := readErrorLog.due(clock.Now()); due {
 					fmt.Printf("(recv-loop) error reading telemetry data. error: %s%s\n",
 						err.Error(), alsoSuppressed(skipped))
 				}
@@ -225,7 +280,7 @@ Loop:
 			// at loop start, and never again -- so even with the unit bug fixed
 			// the keepalive would have fired forever once the first threshold
 			// passed, regardless of how much telemetry was flowing.
-			lastRecvTelemTime = time.Now()
+			lastRecvTelemTime = clock.Now()
 
 			switch tFrame := (tPacket).(type) {
 			case telem.TelemStatusExtType:
