@@ -233,7 +233,18 @@ func selfStartLink(ctx context.Context, client pb.JoystickControlClient, doc map
 
 	switch {
 	case len(ports) == 0:
-		fmt.Println("(bring-up) the saved profile declares no transmitter, so there is no radio link to start")
+		// W17 fork modification (review finding N5): two different states, and
+		// they need two different sentences. TransmitterPorts filters out an
+		// empty port, so a transmitter that IS declared with tx.port left blank
+		// arrived here reading as "declares no transmitter" -- sending the
+		// operator to look for a missing node instead of an empty field.
+		if cc.TransmitterNodeCount(doc) == 0 {
+			fmt.Println("(bring-up) the saved profile declares no transmitter, so there is no radio link to start")
+			return nil
+		}
+		fmt.Println("(bring-up) the saved profile declares a transmitter but its serial port " +
+			"(tx.port) is empty, so there is no port to start the radio link on -- fill it in; " +
+			"see configs/README.md")
 		return nil
 	case len(ports) > 1:
 		fmt.Printf("(bring-up) the saved profile declares %d transmitters (%v); "+

@@ -18,6 +18,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"strings"
@@ -168,4 +169,54 @@ func captureStdout(t *testing.T, f func()) string {
 	out := <-collected
 	_ = r.Close()
 	return out
+}
+
+// TestSelfStartTellsAnEmptyPortFromNoTransmitter is review finding N5. The two
+// states read identically to TransmitterPorts, which filters an empty tx.port
+// out -- so a transmitter whose port was left blank used to be reported as "the
+// saved profile declares no transmitter", sending the operator to look for a
+// missing node instead of an empty field.
+//
+// Neither is an error: there is no link to start either way, and a bring-up
+// failure is reserved for a link that was asked for and failed.
+func TestSelfStartTellsAnEmptyPortFromNoTransmitter(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		doc  map[string]any
+		want string
+		deny string
+	}{
+		{
+			name: "no transmitter at all",
+			doc: map[string]any{"input_output_map": map[string]any{
+				"n": map[string]any{"type": "number"},
+			}},
+			want: "declares no transmitter",
+			deny: "tx.port",
+		},
+		{
+			name: "a transmitter whose port was left empty",
+			doc: map[string]any{"input_output_map": map[string]any{
+				"tx": map[string]any{"type": "tx", "tx": map[string]any{"port": ""}},
+			}},
+			want: "(tx.port) is empty",
+			deny: "declares no transmitter",
+		},
+	} {
+		var err error
+		out := captureStdout(t, func() {
+			// The client is never reached: both cases return before any RPC.
+			err = selfStartLink(context.Background(), nil, tc.doc, benchBaudRate)
+		})
+
+		if err != nil {
+			t.Errorf("%s: nothing to start is not a failure, got %v", tc.name, err)
+		}
+		if !strings.Contains(out, tc.want) {
+			t.Errorf("%s: expected %q in the bring-up output; got:\n%s", tc.name, tc.want, out)
+		}
+		if strings.Contains(out, tc.deny) {
+			t.Errorf("%s: the message must not say %q; got:\n%s", tc.name, tc.deny, out)
+		}
+	}
 }

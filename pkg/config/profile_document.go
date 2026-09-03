@@ -31,6 +31,46 @@ func TransmitterPorts(doc any) []string {
 	return ports
 }
 
+// TransmitterNodeCount returns how many transmitter nodes a decoded config
+// document declares, whether or not each of them names a port. W17 fork
+// addition (review finding N5).
+//
+// It exists to tell two states apart that TransmitterPorts renders
+// identically, because it filters `port != ""`: a profile with NO transmitter
+// at all (an upstream shape, and not an error -- there is nothing to start),
+// and a profile whose transmitter is there but whose tx.port was left empty
+// (an editing mistake, and the operator needs to be told which field to fill).
+// Saying "declares no transmitter" for the second one sends them looking for
+// the wrong thing.
+func TransmitterNodeCount(doc any) int {
+	count := 0
+	scanTransmitterNodes(doc, &count)
+	return count
+}
+
+func scanTransmitterNodes(node any, count *int) {
+	switch v := node.(type) {
+	case map[string]any:
+		// Both halves are needed. `type: tx` and a `tx` object are what
+		// schema.yaml's #/definitions/tx requires of a transmitter node, and
+		// the type check is what keeps the MAP that HOLDS a node keyed "tx"
+		// from counting as one itself -- input_output_map's keys are the node
+		// ids, and "tx" is an obvious id to choose.
+		if kind, ok := v["type"].(string); ok && kind == "tx" {
+			if _, ok := v["tx"].(map[string]any); ok {
+				*count++
+			}
+		}
+		for _, child := range v {
+			scanTransmitterNodes(child, count)
+		}
+	case []any:
+		for _, child := range v {
+			scanTransmitterNodes(child, count)
+		}
+	}
+}
+
 func scanTransmitterPorts(node any, seen map[string]bool) {
 	switch v := node.(type) {
 	case map[string]any:

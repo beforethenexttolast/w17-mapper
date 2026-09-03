@@ -66,3 +66,51 @@ func TestTransmitterPortsDeduplicatesAndSorts(t *testing.T) {
 		t.Errorf("got %v, want [COM3 COM9] -- distinct and sorted", ports)
 	}
 }
+
+// TestTransmitterNodeCountSeesAPortlessTransmitter is review finding N5's half
+// of the answer: TransmitterPorts filters an empty tx.port out, so a declared
+// transmitter with the field left blank is indistinguishable there from no
+// transmitter at all. This is what tells the two apart, so the bring-up can say
+// "fill the port in" rather than "there is no transmitter".
+func TestTransmitterNodeCountSeesAPortlessTransmitter(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		doc   map[string]any
+		ports int
+		nodes int
+	}{
+		{
+			name:  "no transmitter at all",
+			doc:   map[string]any{"input_output_map": map[string]any{"n": map[string]any{"type": "number"}}},
+			ports: 0, nodes: 0,
+		},
+		{
+			name: "a transmitter with an empty port",
+			doc: map[string]any{"input_output_map": map[string]any{
+				"tx": map[string]any{"type": "tx", "tx": map[string]any{"port": ""}},
+			}},
+			ports: 0, nodes: 1,
+		},
+		{
+			name: "a transmitter with no port field at all",
+			doc: map[string]any{"input_output_map": map[string]any{
+				"tx": map[string]any{"type": "tx", "tx": map[string]any{"name": "elrs"}},
+			}},
+			ports: 0, nodes: 1,
+		},
+		{
+			name: "a normal transmitter",
+			doc: map[string]any{"input_output_map": map[string]any{
+				"tx": map[string]any{"type": "tx", "tx": map[string]any{"port": "COM5"}},
+			}},
+			ports: 1, nodes: 1,
+		},
+	} {
+		if got := len(TransmitterPorts(tc.doc)); got != tc.ports {
+			t.Errorf("%s: TransmitterPorts = %d, want %d", tc.name, got, tc.ports)
+		}
+		if got := TransmitterNodeCount(tc.doc); got != tc.nodes {
+			t.Errorf("%s: TransmitterNodeCount = %d, want %d", tc.name, got, tc.nodes)
+		}
+	}
+}
