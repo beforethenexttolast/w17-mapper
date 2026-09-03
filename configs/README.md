@@ -33,10 +33,13 @@ failsafe: arm stays at the 172 disarm rail).
 
 `.github/workflows/w17-windows-release.yaml` bundles this file alongside the
 binary — a giftee-facing zip is the intended distribution shape, not a bare
-`.exe`. On push to `w17-headtrack`, a `w17-v*` tag, or `workflow_dispatch`, it
-builds `windows-amd64` with the same builder image, Go version, and CGO/SDL
-setup upstream's own Windows job uses, runs `go test ./...`, and assembles
-`w17-mapper-windows-amd64.zip`:
+`.exe`. **(Not yet executed on any runner — no W17 release has ever run this
+workflow; the description below is the workflow's design, not an observed
+green run.)** On push to `w17-headtrack`, a `w17-v*` tag, or
+`workflow_dispatch`, it builds `windows-amd64` with the same builder image, Go
+version, and CGO/SDL setup upstream's own Windows job uses, runs
+`go test -tags static ./...` (matching the shipped `-tags static` build), and
+assembles `w17-mapper-windows-amd64.zip`:
 
 ```
 w17-mapper-windows-amd64/
@@ -46,11 +49,21 @@ w17-mapper-windows-amd64/
     README.md          (this file)
   FORK-NOTICE.md
   LICENSE
+  LICENSE-GPL          (GPL v3 full text — this fork's elected licence)
+  LICENSE-FAIR-SOURCE  (Fair Source 0.9 full text — upstream's other option, not elected)
   W17-README.txt        (generated at package time — build ref, quickstart, known issues)
 ```
 
 The artifact uploads on every run and, on tag builds, attaches to the GitHub
 release.
+
+Cosmetic note: `w17-v*` tags (e.g. `w17-v1.0.0`) do not match
+`scripts/cmd/generate-version-file/generate-version-file.go`'s release-tag
+regex `^v\d+\.\d+\.\d+` (it anchors at the string start, and the tag starts
+with `w17-`, not `v`), so the version embedded in the binary via `go generate`
+falls back to its `(devel)` default instead of the tag — this README's own
+`Build:` line in `W17-README.txt` is generated independently from
+`github.ref_name`/`github.sha` and is unaffected.
 
 **How the ground station consumes it.** Race day does not read this repo's
 docs or run the `Loading` command above by hand — it launches the exe
@@ -63,14 +76,17 @@ result to `MapperRunner.start({ binaryPath, argv })`
 (`w17-ground-station/main/raceDayOrchestrator.js:279`,
 `w17-ground-station/main/mapperRunner.js:99`), which spawns `binaryPath` with
 `cwd: path.dirname(binaryPath)` and an environment scrubbed of the entire
-`W17_*` namespace (`w17-ground-station/main/mapperRunner.js:110,113`). Both
-`Mapper Path` and `Profile Path` are ground-station **settings the operator
-sets once**, and both must be OS-absolute — a relative value is refused
-before launch (`w17-ground-station/main/raceDayOrchestrator.js:60-69`). After
-unzipping this bundle anywhere on the Windows PC, point:
+`W17_*` namespace (`w17-ground-station/main/mapperRunner.js:110,113`). Both fields are
+ground-station **settings the operator sets once**, on the ⚙ RACE DAY row,
+under the visible sub-labels **"drive program"** and **"saved profile"**
+(`w17-ground-station/renderer/index.html:564-565`) — internally stored as
+`mapperPath`/`profilePath` (`w17-ground-station/shared/settings.js:220,226-227`).
+Both must be OS-absolute — a relative value is refused before launch
+(`w17-ground-station/main/raceDayOrchestrator.js:60-69`). After unzipping this
+bundle anywhere on the Windows PC, point:
 
-- **Mapper Path** → `...\w17-mapper-windows-amd64\elrs-joystick-control.exe`
-- **Profile Path** → `...\w17-mapper-windows-amd64\configs\w17-ds4.json`
+- **drive program** → `...\w17-mapper-windows-amd64\elrs-joystick-control.exe`
+- **saved profile** → `...\w17-mapper-windows-amd64\configs\w17-ds4.json`
 
 **Known issue, today's truth (`[fix-wave: MAP-1]`).** The exact invocation
 this README's `Loading` section documents, and the one race day performs
@@ -93,6 +109,10 @@ day's `MAPPER_ARG_WHITELIST` carries only `-config-file-path`
 `StartLink` for it. "Running" on the race-day card today means "the process
 started", not "frames are on the wire"; verify with a bench check (CRSF
 frames observed on the wire after one button press) before trusting it.
+Today's only way to actually start the link is the mapper's own web UI's RF
+Link panel (Start Link button,
+`webapp/src/components/pages/home/misc/RFLinkManager.jsx`) at
+`http://localhost:3000` — bench operators use that escape hatch now.
 Tracked as review finding MAP-2 for a separate fix wave.
 
 ## Channel map (firmware truth: control-fw `lib/channels` at `3f4f9b7`)
