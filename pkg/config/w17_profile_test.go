@@ -92,6 +92,42 @@ func TestW17ProfileValidatesAndLintsClean(t *testing.T) {
 	}
 }
 
+// TestW17ProfileShipsBothPlaceholders is the anti-leak pin (MAP-5). The two
+// machine-specific values MUST still be placeholders in the committed file:
+// a bench-filled copy pushed by accident would ship one operator's COM port
+// and pad id to the giftee, where they resolve to nothing -- and, worse, would
+// silently disable the refusal that tells the next operator to fill them in.
+func TestW17ProfileShipsBothPlaceholders(t *testing.T) {
+	raw, err := os.ReadFile(w17ProfilePath)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	found := UnfilledPlaceholders(doc)
+	want := map[string]bool{
+		"REPLACE-WITH-COM-PORT": false,
+		"REPLACE-WITH-DS4-ID":   false,
+	}
+	for _, value := range found {
+		if _, expected := want[value]; !expected {
+			t.Errorf("the profile carries an unexpected placeholder %q", value)
+			continue
+		}
+		want[value] = true
+	}
+	for value, seen := range want {
+		if !seen {
+			t.Errorf("the shipped profile must still carry %q -- a filled-in copy "+
+				"must never be committed", value)
+		}
+	}
+}
+
 func TestW17ProfileChannelMap(t *testing.T) {
 	cfg, _ := loadW17Profile(t)
 

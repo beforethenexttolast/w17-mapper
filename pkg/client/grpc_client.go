@@ -7,10 +7,12 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
 
+	cc "github.com/kaack/elrs-joystick-control/pkg/config"
 	"github.com/kaack/elrs-joystick-control/pkg/proto/generated/pb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -43,10 +45,10 @@ const initTimeout = 10 * time.Second
 // object contributes that object; a bare {"input_output_map": ...} document --
 // which the RPC also accepts, and which some hand-written configs use -- is
 // passed through unchanged.
-func configPayload(configJson []byte) (*structpb.Struct, error) {
+func configPayload(configJson []byte) (*structpb.Struct, map[string]any, error) {
 	var doc map[string]any
 	if err := json.Unmarshal(configJson, &doc); err != nil {
-		return nil, fmt.Errorf("the saved profile is not valid JSON: %w", err)
+		return nil, nil, fmt.Errorf("the saved profile is not valid JSON: %w", err)
 	}
 
 	if inner, wrapped := doc["config"].(map[string]any); wrapped {
@@ -55,9 +57,9 @@ func configPayload(configJson []byte) (*structpb.Struct, error) {
 
 	payload, err := structpb.NewStruct(doc)
 	if err != nil {
-		return nil, fmt.Errorf("the saved profile could not be encoded for the drive program: %w", err)
+		return nil, nil, fmt.Errorf("the saved profile could not be encoded for the drive program: %w", err)
 	}
-	return payload, nil
+	return payload, doc, nil
 }
 
 // Init performs the headless bring-up against the mapper's own gRPC server:
@@ -106,8 +108,19 @@ func Init(txServerPortName, configFilePath string, txServerPortBaudRate, grpcPor
 		}
 
 		var payload *structpb.Struct
-		if payload, err = configPayload(configJson); err != nil {
+		var doc map[string]any
+		if payload, doc, err = configPayload(configJson); err != nil {
 			return err
+		}
+
+		// W17 fork addition (MAP-5, OD-9/D3): refuse an unfilled profile HERE,
+		// before the RPC, so the operator reads the plain sentence on its own
+		// rather than wrapped in a gRPC status. The server refuses it too (that
+		// is the authoritative gate, and it also covers the editor); this is the
+		// same verdict delivered readably, and it is what guarantees the
+		// self-start below never sees the literal "REPLACE-WITH-COM-PORT".
+		if found := cc.UnfilledPlaceholders(doc); len(found) != 0 {
+			return errors.New(cc.PlaceholderRefusal(found))
 		}
 
 		if res, err = client.SetConfig(ctx, &pb.SetConfigReq{Config: payload}); err != nil {

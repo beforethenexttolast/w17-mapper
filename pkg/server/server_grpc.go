@@ -135,6 +135,22 @@ func (s *GRPCServer) SetConfig(_ context.Context, req *pb.SetConfigReq) (*pb.Emp
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 
+	// W17 fork addition (MAP-5, owner decision OD-9/D3): an UNFILLED PLACEHOLDER
+	// is a hard refusal, not a warning. A profile still carrying
+	// REPLACE-WITH-COM-PORT / REPLACE-WITH-DS4-ID is fail-safe -- nothing
+	// resolves, so every channel sits on its failsafe and the car cannot arm --
+	// but it was also completely SILENT: legal strings pass the schema, the
+	// cycle check, the lint and the ground station's pre-launch checks alike,
+	// and the operator's only symptom was a car that would not move. Refusing
+	// here covers both load paths, the headless `-config-file-path` bring-up and
+	// the editor's Apply, with the same sentence. This runs BEFORE the config is
+	// applied, so a placeholder profile never becomes the live config -- which is
+	// also what keeps the self-start in client.Init from ever calling StartLink
+	// on the literal string "REPLACE-WITH-COM-PORT".
+	if found := cc.UnfilledPlaceholders(v); len(found) != 0 {
+		return nil, status.Error(codes.InvalidArgument, cc.PlaceholderRefusal(found))
+	}
+
 	// W17 fork addition: plausibility lint, warnings only -- non-W17 rigs must
 	// keep loading. The committed W17 profile is held to zero findings by its
 	// own test. See config.LintConfig.

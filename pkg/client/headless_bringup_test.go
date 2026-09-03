@@ -31,7 +31,9 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -45,6 +47,40 @@ import (
 
 // w17ProfilePath is the committed profile the ground station ships and loads.
 const w17ProfilePath = "../../configs/w17-ds4.json"
+
+// The values a bench operator fills the shipped placeholders in with. The port
+// is never opened -- StartLink is recorded, not executed -- but it has to be
+// the SAME string the profile carries, because that is exactly what the
+// self-start has to get right.
+const (
+	benchPort     = "COM17"
+	benchGamepad  = "a1b2c3"
+	benchBaudRate = 921600
+)
+
+// filledProfile writes a copy of the committed profile with its placeholders
+// filled in, the way a bench operator would, and returns its path. Everything
+// else about the file is byte-for-byte the shipped artifact.
+func filledProfile(t *testing.T) string {
+	t.Helper()
+
+	raw, err := os.ReadFile(w17ProfilePath)
+	if err != nil {
+		t.Fatalf("setup: the committed profile must exist: %v", err)
+	}
+
+	filled := strings.ReplaceAll(string(raw), "REPLACE-WITH-COM-PORT", benchPort)
+	filled = strings.ReplaceAll(filled, "REPLACE-WITH-DS4-ID", benchGamepad)
+	if strings.Contains(filled, cc.PlaceholderPrefix) {
+		t.Fatalf("setup: the shipped profile grew a placeholder this helper does not fill in")
+	}
+
+	path := filepath.Join(t.TempDir(), "w17-ds4-filled.json")
+	if err := os.WriteFile(path, []byte(filled), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	return path
+}
 
 // recordingServer is the real gRPC server with StartLink stubbed out: it
 // records the request and reports success instead of touching a serial port.
@@ -98,15 +134,16 @@ func startMapper(t *testing.T) (rec *recordingServer, configCtl *cc.Controller, 
 	return rec, configCtl, lis.Addr().(*net.TCPAddr).Port
 }
 
-// TestW17ProfileHeadlessBringup is the MAP-1 gate: the committed profile, sent
-// through the real client -> gRPC -> SetConfig path, must be ACCEPTED and
-// APPLIED. Before the unwrap fix this returned InvalidArgument and client.Init
-// panicked, so the documented `-config-file-path` invocation -- and the whole
-// race-day launch built on it -- could not start on any machine.
+// TestW17ProfileHeadlessBringup is the MAP-1 gate: the committed profile, once
+// a bench operator has filled its two machine-specific placeholders in, must be
+// ACCEPTED and APPLIED through the real client -> gRPC -> SetConfig path.
+// Before the unwrap fix this returned InvalidArgument and client.Init panicked,
+// so the documented `-config-file-path` invocation -- and the whole race-day
+// launch built on it -- could not start on any machine.
 func TestW17ProfileHeadlessBringup(t *testing.T) {
 	_, configCtl, port := startMapper(t)
 
-	if err := Init("", w17ProfilePath, 921600, port, false); err != nil {
+	if err := Init("", filledProfile(t), benchBaudRate, port, false); err != nil {
 		t.Fatalf("the committed profile must load through the headless path: %v", err)
 	}
 
@@ -119,6 +156,70 @@ func TestW17ProfileHeadlessBringup(t *testing.T) {
 	if _, ok := configCtl.Config.IOMap["w17-tx"]; !ok {
 		t.Errorf("the applied config has no w17-tx transmitter node; got keys %v",
 			keysOf(configCtl.Config.IOMap))
+	}
+}
+
+// TestHeadlessBringupRefusesUnfilledProfile is the MAP-5 gate (owner decision
+// OD-9/D3): the profile AS SHIPPED, still carrying both placeholders, must be
+// refused with one plain sentence rather than loaded and silently inert.
+//
+// The state it refuses is fail-safe but mute: an unresolved gamepad id matches
+// no device, so every channel sits on its failsafe and arm stays on the 172
+// disarm rail -- the car is safe and completely dead, and nothing said why.
+func TestHeadlessBringupRefusesUnfilledProfile(t *testing.T) {
+	rec, configCtl, port := startMapper(t)
+
+	err := Init("", w17ProfilePath, benchBaudRate, port, false)
+	if err == nil {
+		t.Fatal("the shipped profile still has placeholders in it and must be refused")
+	}
+
+	want := cc.PlaceholderRefusal([]string{"REPLACE-WITH-COM-PORT", "REPLACE-WITH-DS4-ID"})
+	if err.Error() != want {
+		t.Errorf("the refusal must be the one plain sentence, verbatim.\n got: %s\nwant: %s",
+			err.Error(), want)
+	}
+
+	if configCtl.Config != nil {
+		t.Error("a refused profile must not become the live config")
+	}
+	if calls := rec.links(); len(calls) != 0 {
+		t.Errorf("a refused profile must not start the radio; got StartLink%v", calls)
+	}
+}
+
+// TestSetConfigRefusesUnfilledProfileServerSide pins the SERVER half of the
+// same rule -- the authoritative gate, which also covers the web editor's
+// Apply, and which a client that skipped its own check could not bypass.
+func TestSetConfigRefusesUnfilledProfileServerSide(t *testing.T) {
+	_, configCtl, port := startMapper(t)
+
+	raw, err := os.ReadFile(w17ProfilePath)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	payload, _, err := configPayload(raw)
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	conn, err := grpc.Dial("127.0.0.1:"+strconv.Itoa(port),
+		grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	defer conn.Close()
+
+	_, err = pb.NewJoystickControlClient(conn).SetConfig(context.Background(),
+		&pb.SetConfigReq{Config: payload})
+	if err == nil {
+		t.Fatal("SetConfig must refuse a profile with unfilled placeholders")
+	}
+	if !strings.Contains(err.Error(), "has not been matched to this computer yet") {
+		t.Errorf("the server refusal should carry the same plain sentence, got: %v", err)
+	}
+	if configCtl.Config != nil {
+		t.Error("a refused config must not be applied")
 	}
 }
 
@@ -166,7 +267,7 @@ func TestHeadlessBringupRefusesDoubleWrappedPayload(t *testing.T) {
 // the fix must not start hunting for a "config" key that legitimately is not
 // there.
 func TestConfigPayloadPassesBareDocumentThrough(t *testing.T) {
-	payload, err := configPayload([]byte(`{"input_output_map":{"n":{"id":"n","type":"number","number":{"output":0}}}}`))
+	payload, _, err := configPayload([]byte(`{"input_output_map":{"n":{"id":"n","type":"number","number":{"output":0}}}}`))
 	if err != nil {
 		t.Fatalf("a bare config document must encode: %v", err)
 	}
@@ -186,7 +287,7 @@ func TestConfigPayloadUnwrapsSavedProfile(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	payload, err := configPayload(raw)
+	payload, _, err := configPayload(raw)
 	if err != nil {
 		t.Fatalf("the committed profile must encode: %v", err)
 	}
