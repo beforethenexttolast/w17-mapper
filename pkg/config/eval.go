@@ -129,7 +129,19 @@ func applyConfig(config *Config) ([]*IOHolder, map[string]*[16]util.CRSFValue, m
 // The heartbeat is the floor, not a replacement.
 const evalHeartbeatInterval = 25 * time.Millisecond
 
+// EvalLoop runs the evaluation loop with whatever config is live when it
+// starts. Kept for compatibility; StartEvalLoop calls evalLoop directly with
+// the config captured BEFORE the goroutine is spawned.
 func (c *Controller) EvalLoop() error {
+	return c.evalLoop(c.Config)
+}
+
+// evalLoop takes its starting config as an argument. W17 fork modification: the
+// loop used to read c.Config from inside the new goroutine, which races any
+// SetConfig running at the same time -- a real data race the race detector sees
+// as soon as a test applies a config to a freshly built controller, and the
+// reason pkg/server's load-path tests use a controller with no loop at all.
+func (c *Controller) evalLoop(initial *Config) error {
 
 	var config *Config
 	//goland:noinspection GoPreferNilSlice
@@ -152,7 +164,7 @@ func (c *Controller) EvalLoop() error {
 	heartbeat := time.NewTicker(evalHeartbeatInterval)
 	defer heartbeat.Stop()
 
-	EvalAll(c.Config)
+	EvalAll(initial)
 
 Loop:
 	for {
@@ -166,6 +178,9 @@ Loop:
 				holders = []*IOHolder{}
 				c.EvalDataMap = &map[string]*[16]util.CRSFValue{} //delete all existing entries
 				c.EvalUnresolvedMap = &map[string]*atomic.Bool{}
+				//W17 fork addition (MAP-4): clearing the config is an adoption
+				//too -- SetConfig must not wait for a swap that will never come.
+				c.markAdopted()
 				continue
 			}
 
@@ -178,6 +193,11 @@ Loop:
 			//goroutine and must never observe a half-filled map
 			c.EvalDataMap = &published
 			c.EvalUnresolvedMap = &unresolved
+
+			//W17 fork addition (MAP-4): the config is LIVE from here -- this is
+			//the swap the send loop reads. Release SetConfig only now, so the
+			//RPC cannot report success for a config that is not on the wire.
+			c.markAdopted()
 			c.alertEvalChan()
 		case _ = <-c.StreamEventChan:
 			if config == nil {
@@ -218,9 +238,13 @@ func (c *Controller) StartEvalLoop() error {
 	c.initEvalChan()
 	c.initStreamChan()
 
+	// W17 fork modification: capture the starting config HERE, in the caller's
+	// goroutine, rather than reading the field from inside the loop's.
+	initial := c.Config
+
 	c.evalTomb = &tomb.Tomb{}
 	c.evalTomb.Go(func() error {
-		return c.EvalLoop()
+		return c.evalLoop(initial)
 	})
 
 	return nil

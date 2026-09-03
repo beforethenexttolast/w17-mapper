@@ -22,8 +22,9 @@ package config
 // channel's failsafe.
 //
 // Synchronization notes, because the loop owns everything it evaluates:
-//   - the config is delivered with a BLOCKING send on ConfigEventChan, so
-//     delivery cannot be dropped;
+//   - the config is delivered with SetConfig, which since MAP-4 returns only
+//     once the loop has ADOPTED it, so delivery cannot be dropped and the
+//     published arrays exist from that point on;
 //   - the input dies through an atomic flag, giving the loop a race-free view;
 //   - progress is observed by receiving from EvalEventChan (each successful
 //     receive is a rendezvous with an alert sent right after a transmitter
@@ -97,9 +98,8 @@ func TestHeartbeatNeutralizesWithoutAnyEvent(t *testing.T) {
 		Ctl: ctl, Config: cfg,
 	}
 
-	// Blocking send: the loop has definitely adopted the config after this.
-	ctl.ConfigEventChan <- cfg
-	waitAlert(t, ctl, "the config to apply")
+	// SetConfig returns only after the eval loop has adopted the config (MAP-4).
+	ctl.SetConfig(cfg)
 
 	// The input dies. Deliberately NO alert of any kind follows.
 	dead.Store(true)

@@ -12,7 +12,9 @@ import (
 	"github.com/kaack/elrs-joystick-control/pkg/proto/generated/pb"
 	"github.com/kaack/elrs-joystick-control/pkg/util"
 	"gopkg.in/tomb.v2"
+	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type Controller struct {
@@ -62,7 +64,26 @@ type Controller struct {
 	StreamEventCount int32
 	StreamEventChan  chan int32
 
+	// ConfigEventChan carries a newly applied config to the eval loop, which is
+	// the SOLE adoption point: it rebuilds the transmitter holders and swaps in
+	// the published channel arrays (see EvalLoop).
+	//
+	// W17 fork modification (MAP-4): BUFFERED (1). It used to be unbuffered and
+	// written with a non-blocking send, so with the loop momentarily busy the
+	// alert was simply dropped -- and SetConfig returned success anyway. The
+	// config was then live in c.Config, visible to the editor and to GetConfig,
+	// while the send loop went on transmitting the PREVIOUS config's arrays,
+	// with nothing to correct it: unlike the sibling device alert (whose dropped
+	// events the 25 ms heartbeat re-picks up), a dropped config alert has no
+	// second chance -- the heartbeat re-evaluates the OLD holders.
 	ConfigEventChan chan *Config
+
+	// configAdopted is closed by the eval loop each time it finishes publishing
+	// a config, and replaced with a fresh channel. SetConfig takes the current
+	// one before it delivers, so waiting on it means "the config that is live
+	// now is mine or newer". W17 fork addition (MAP-4).
+	adoptionMu    sync.Mutex
+	configAdopted chan struct{}
 }
 
 func NewCtl(dc *dc.Controller) *Controller {
@@ -211,21 +232,89 @@ func (c *Controller) GetEvalStates(states *pb.EvalStates) *pb.EvalStates {
 	return states
 }
 
+// configAdoptionTimeout bounds each of the two waits in SetConfig. The eval
+// loop adopts a config in one loop iteration, so this is three orders of
+// magnitude of headroom; it exists only so that a wedged or dead loop turns
+// into a loud warning instead of a hung RPC. W17 fork addition (MAP-4).
+const configAdoptionTimeout = 2 * time.Second
+
+// SetConfig makes config the live config and returns once the eval loop has
+// ADOPTED it -- that is, once the transmitter holders have been rebuilt and the
+// published channel arrays swapped in, which is the moment the send loop starts
+// transmitting from it.
+//
+// W17 fork modification (MAP-4). Upstream set the field, fired a droppable
+// non-blocking alert and returned success. When that alert was dropped the RPC
+// still reported success, the editor showed the new config as applied, and the
+// car went on being driven by the OLD one, indefinitely: the eval loop's 25 ms
+// heartbeat re-evaluates the holders it already has, so it repairs a dropped
+// DEVICE alert but can never repair a dropped CONFIG alert. On the race-day
+// path this is the first thing that happens after launch, so the failure mode
+// was "the profile loaded" with the profile not loaded.
+//
+// A controller with no running eval loop -- a bare one in a load-path test, or
+// one already shut down -- has nothing that can adopt anything, so it keeps the
+// old shape: set the field and return.
 func (c *Controller) SetConfig(config *Config) {
 	config.Ctl = c
 	c.Config = config
-	c.alertConfigChan()
-}
 
-func (c *Controller) alertConfigChan() {
+	if c.ConfigEventChan == nil || c.evalTomb == nil || !c.evalTomb.Alive() {
+		return
+	}
+
+	// Taken BEFORE the delivery, so the close we wait for cannot be one that
+	// happened before our config was sent.
+	adopted := c.adoptionBarrier()
+
 	select {
-	case c.ConfigEventChan <- c.Config:
-	//no-op
-	default:
-		//no-op
+	case c.ConfigEventChan <- config:
+	case <-c.evalTomb.Dying():
+		return
+	case <-time.After(configAdoptionTimeout):
+		fmt.Printf("(config) WARNING: the eval loop did not take the new config within %v -- "+
+			"it is NOT live and the previous one is still being transmitted\n", configAdoptionTimeout)
+		return
+	}
+
+	select {
+	case <-adopted:
+	case <-c.evalTomb.Dying():
+	case <-time.After(configAdoptionTimeout):
+		fmt.Printf("(config) WARNING: the new config was delivered but not adopted within %v -- "+
+			"it may not be on the wire yet\n", configAdoptionTimeout)
 	}
 }
 
+// adoptionBarrier returns the channel the NEXT adoption will close.
+func (c *Controller) adoptionBarrier() <-chan struct{} {
+	c.adoptionMu.Lock()
+	defer c.adoptionMu.Unlock()
+
+	if c.configAdopted == nil {
+		c.configAdopted = make(chan struct{})
+	}
+	return c.configAdopted
+}
+
+// markAdopted is called by the eval loop once a config's channel arrays are
+// published, releasing whoever is waiting in SetConfig. W17 fork addition.
+func (c *Controller) markAdopted() {
+	c.adoptionMu.Lock()
+	defer c.adoptionMu.Unlock()
+
+	if c.configAdopted != nil {
+		close(c.configAdopted)
+	}
+	c.configAdopted = make(chan struct{})
+}
+
 func (c *Controller) initConfigChan() {
-	c.ConfigEventChan = make(chan *Config)
+	// Buffered so delivery does not depend on the loop being at its select the
+	// instant SetConfig runs; see ConfigEventChan.
+	c.ConfigEventChan = make(chan *Config, 1)
+
+	c.adoptionMu.Lock()
+	defer c.adoptionMu.Unlock()
+	c.configAdopted = make(chan struct{})
 }
