@@ -1,0 +1,180 @@
+# SPDX-FileCopyrightText: © 2026 W17 project (owned fork addition)
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# W17 mapper — Windows release packaging.
+#
+# WHY THIS EXISTS
+# The upstream workflows in this directory (windows-amd64.yaml etc.) only
+# trigger on `release: [created]`, only zip the bare .exe + LICENSE*, and were
+# never wired up for this fork (no W17 release has ever run one). Nothing in
+# this repo assembles the one artifact the ground station actually needs on
+# race day: the exe alongside the committed W17 DualShock 4 profile
+# (configs/w17-ds4.json). This job closes that gap without touching the
+# upstream workflow files.
+#
+# BUILD FIDELITY
+# This job builds the SAME way upstream's own Windows job does: the
+# `oneeyefpv/windows-amd64-builder` Docker image (see Dockerfile.windows-amd64
+# in this repo for its exact contents — pinned Go 1.20.6, MinGW-w64 gcc,
+# SDL2 2.28.1 dev libs, protoc/Node for `go generate`), the same
+# `-tags static` CGO/SDL build flag upstream uses, and no other build tags of
+# any kind. In particular, this workflow must never add a build tag that
+# would compile in the safety-gated head-tracking activation path described
+# in FORK-NOTICE.md's "Safety boundary" section — none is added or named here,
+# and .githooks/pre-push independently refuses any push that introduces one
+# into code, build, or CI files.
+#
+# The only functional addition over upstream's own build step is
+# `go test ./...`, run inside the same container before packaging, so a
+# broken build can never reach a tagged release.
+name: W17 mapper — Windows release
+
+on:
+  push:
+    branches:
+      - w17-headtrack
+    tags:
+      - 'w17-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-amd64:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download builder image
+        run: docker pull oneeyefpv/windows-amd64-builder
+
+      - name: Build + test binary (same builder image, Go version, and CGO/SDL setup as upstream)
+        run: >
+          docker run -m 4096m -v ${{ github.workspace }}:C:\app -t oneeyefpv/windows-amd64-builder dir /s /c "
+          cd app &&
+          go generate ./... &&
+          go test ./... &&
+          go build -trimpath -tags static -o elrs-joystick-control.exe .\cmd\elrs-joystick-control\. "
+
+      - name: Assemble W17 release bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundle = 'w17-mapper-windows-amd64'
+
+          New-Item -ItemType Directory -Force -Path "$bundle\configs" | Out-Null
+          Copy-Item 'elrs-joystick-control.exe' -Destination $bundle
+          Copy-Item 'configs\w17-ds4.json' -Destination "$bundle\configs\w17-ds4.json"
+          Copy-Item 'configs\README.md' -Destination "$bundle\configs\README.md"
+          Copy-Item 'FORK-NOTICE.md' -Destination $bundle
+          Copy-Item 'LICENSE' -Destination $bundle
+
+          $refName = '${{ github.ref_name }}'
+          $shortSha = '${{ github.sha }}'.Substring(0, 7)
+          $builtAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss') + ' UTC'
+
+          # Generated at package time (not a tracked file) so it can carry the
+          # exact ref/commit this bundle was built from. Content is the
+          # honest state of the mapper's race-day path as of this build,
+          # including the two confirmed review findings that are NOT fixed by
+          # this workflow (they are code changes, tracked separately) — see
+          # FORK-NOTICE.md's provenance table for the commits that fix them
+          # once they land.
+          @"
+          W17 Mapper -- Windows Release Bundle
+          =====================================
+
+          This is the packaged Windows build of the W17 project's
+          DualShock->CRSF->ELRS mapper (a fork of ELRS Joystick Control --
+          see FORK-NOTICE.md for provenance and licence election). It is the
+          binary+profile pair the ground station (w17-ground-station) expects
+          on race day.
+
+          Build: $refName @ $shortSha, built $builtAt
+
+          Contents
+          --------
+            elrs-joystick-control.exe   the mapper binary (Windows/amd64)
+            configs\w17-ds4.json        the committed W17 DualShock 4 profile
+            configs\README.md           profile docs (channel map, arm chain, SDL layout, bench checks)
+            FORK-NOTICE.md              provenance, licence election, change log, safety boundary
+            LICENSE                     upstream's dual-licence pointer (this fork elects GPL-3.0-or-later)
+            W17-README.txt              this file
+
+          Quickstart (manual / bench use)
+          --------------------------------
+            elrs-joystick-control.exe -config-file-path configs\w17-ds4.json ^
+                -tx-serial-port-name COM5 -tx-serial-port-baud-rate 921600
+
+          Before first use, replace the two placeholders in configs\w17-ds4.json:
+            REPLACE-WITH-DS4-ID   -> the pad's id from the mapper's own web UI gamepad list
+            REPLACE-WITH-COM-PORT -> the ELRS TX serial port (must equal -tx-serial-port-name)
+
+          How the ground station uses this bundle
+          ----------------------------------------
+          Race day does not run the command above by hand. It launches this
+          exe directly and passes only "-config-file-path <Profile Path>"
+          (w17-ground-station main/raceDayOrchestrator.js:44 and :50-71,
+          MAPPER_ARG_WHITELIST / mapperArgv), where <Profile Path> is the
+          ABSOLUTE path set in the ground station's own settings. Point:
+            Mapper Path  -> ...\elrs-joystick-control.exe   (wherever you unzip this bundle)
+            Profile Path -> ...\configs\w17-ds4.json         (unzipped alongside it)
+          Both must be OS-absolute paths -- a relative value is refused before
+          launch (raceDayOrchestrator.js:60-69).
+
+          Known issues in today's code (tracked, not fixed by this bundle)
+          -------------------------------------------------------------------
+            [fix-wave: MAP-1] The "-config-file-path" load above currently
+            PANICS the process: the client wraps the profile's document in a
+            second {"config": ...} envelope before sending it, and the
+            committed profile already carries that wrapper, so the doubled
+            document fails schema validation and the process exits.
+
+            [fix-wave: MAP-2] Launching the mapper -- by hand or via race day
+            -- does not by itself start transmitting CRSF frames: nothing
+            calls StartLink unless -tx-serial-port-name is also passed, which
+            race day's own launch does not do today. "Running" on the
+            race-day card currently means "the process started", not "frames
+            are on the wire" -- verify with a bench check before trusting it.
+
+          Safety
+          ------
+          Head-intent ingest (UDP 5602) in this build is LOG-ONLY: it reaches
+          no control output, and its diagnostics stream is read-only. No
+          shaping or arbitration code exists in this binary. See
+          FORK-NOTICE.md's "Safety boundary" section for the full statement
+          and the push-review rule that guards it.
+
+          Provenance
+          ----------
+          Fork of ELRS Joystick Control (github.com/kaack/elrs-joystick-control),
+          GPL-3.0-or-later election. Full change log: FORK-NOTICE.md.
+          "@ | Set-Content -Path "$bundle\W17-README.txt" -Encoding utf8
+
+          Compress-Archive -Path $bundle -DestinationPath "$bundle.zip" -Force
+
+      - name: Upload release bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: w17-mapper-windows-amd64
+          path: w17-mapper-windows-amd64.zip
+          retention-days: 30
+
+      - name: Attach bundle to the GitHub release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/w17-v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ github.ref_name }}'
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag 'w17-mapper-windows-amd64.zip' --clobber
+          } else {
+            gh release create $tag 'w17-mapper-windows-amd64.zip' --title $tag --generate-notes
+          }
