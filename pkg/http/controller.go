@@ -86,12 +86,23 @@ func (c *Controller) NewEcho(err error) (*echo.Echo, error) {
 		echopprof.Wrap(echoHandler)
 	}
 
+	// W17 fork modification (review finding MAP-8): the CORS headers are sent
+	// only for the web UI's OWN origin, not for every origin on the internet.
+	// See cors.go for the rule and why it cannot break the local editor.
+	origins := allowedOrigins(c.bindHost, c.webAppPort)
+
 	//override server handler to intercept grpc-web requests (content-type: application/grpc-web)
 	echoServer.Server = &http.Server{
 		Addr: net.JoinHostPort(c.bindHost, strconv.Itoa(c.webAppPort)),
 		Handler: http.HandlerFunc(func(resp http.ResponseWriter, req *http.Request) {
-			resp.Header().Set("Access-Control-Allow-Headers", "*")
-			resp.Header().Set("Access-Control-Allow-Origin", "*")
+			// Vary unconditionally: the response body is the same for every
+			// origin but the headers are not, and a cache that missed that
+			// would hand one origin another origin's permission.
+			resp.Header().Add("Vary", "Origin")
+			if origin := req.Header.Get("Origin"); originAllowed(origin, req.Host, origins) {
+				resp.Header().Set("Access-Control-Allow-Headers", "*")
+				resp.Header().Set("Access-Control-Allow-Origin", origin)
+			}
 
 			if wrappedGrpc.IsGrpcWebRequest(req) {
 				wrappedGrpc.ServeHTTP(resp, req)

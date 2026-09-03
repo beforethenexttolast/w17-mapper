@@ -188,12 +188,16 @@ jobs:
           race day this PC hosts the Wi-Fi hotspot the phone HUD joins. The Go
           profiling handlers are likewise off unless -pprof is passed.
 
-          What loopback does NOT close: the web-UI port still sends
-          Access-Control-Allow-Origin: * unconditionally, so any web page
-          open in a browser ON THIS PC is still a reachable client and can
-          call SetConfig, StartLink, StopLink and SetCRSFDeviceField with no
-          credentials. Loopback removes every host on the network; the
-          browser on this machine is what is left.
+          The browser on this PC. Loopback removes every host on the
+          network, not the browser on the same machine: a page on any site
+          you have open can issue grpc-web calls to http://127.0.0.1:3000.
+          It used to be told it could read the answers -- the port sent
+          Access-Control-Allow-Origin: * on every response -- so SetConfig,
+          StartLink, StopLink and SetCRSFDeviceField were reachable from any
+          web page with no credentials. That header now goes only to the web
+          UI's own origin (127.0.0.1, localhost or [::1] on the web-UI
+          port); every other origin gets nothing. The editor is served from
+          that same port, so it is same-origin and unaffected.
 
           -bind-all restores the old all-interfaces behaviour in one flag.
           Anyone who can then reach this PC's IP can call SetConfig,

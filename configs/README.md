@@ -81,12 +81,19 @@ authenticated, and on race day the laptop hosts the phone's Wi-Fi hotspot, so
 local — the ground station dials `127.0.0.1:10000` — so the default costs
 nothing.
 
-**What loopback does not close.** The grpc-web port still sets
-`Access-Control-Allow-Origin: *` unconditionally (`pkg/http/controller.go`), so
-**any web page open in a browser on this same PC** remains a reachable client:
-it can call `SetConfig`, `StartLink`, `StopLink` and `SetCRSFDeviceField`
-without credentials. Loopback removes every host on the network; the browser on
-this machine is what is left.
+**The browser on this PC.** Loopback removes every host on the network, but not
+the browser sitting on the same machine: a page on any site the operator has
+open can issue grpc-web calls to `http://127.0.0.1:3000`. It used to be told it
+could read the answers — the port sent `Access-Control-Allow-Origin: *` on every
+response — so `SetConfig`, `StartLink`, `StopLink` and `SetCRSFDeviceField` were
+reachable from any web page, without credentials. The port now sends that header
+only for the web UI's **own** origin (`127.0.0.1`, `localhost` or `[::1]` on the
+web-UI port; `pkg/http/cors.go`), and sends nothing at all to any other origin.
+The editor is unaffected — it is served from this same port, so its calls are
+same-origin and need no CORS header — and so is the ground station, which speaks
+native gRPC to `127.0.0.1:10000` rather than grpc-web. Under `-bind-all` the
+machine cannot know which name the operator will type, so the rule there falls
+back to same-origin.
 
 - `-bind-host <ip>` — listen somewhere else.
 - `-bind-all` — listen on every interface, the way builds before this one did.
