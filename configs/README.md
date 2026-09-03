@@ -29,6 +29,72 @@ failsafe: arm stays at the 172 disarm rail).
 | `REPLACE-WITH-DS4-ID` | every `gamepad.id` | the pad's id from the mapper UI gamepad list (an md5-derived 6-char hash of the SDL GUID+name — device-specific, so it cannot be committed) |
 | `REPLACE-WITH-COM-PORT` | `tx.port` | the ELRS TX serial port (e.g. `COM5`); must equal `-tx-serial-port-name` or the send loop resolves no channels |
 
+## Packaged release
+
+`.github/workflows/w17-windows-release.yaml` bundles this file alongside the
+binary — a giftee-facing zip is the intended distribution shape, not a bare
+`.exe`. On push to `w17-headtrack`, a `w17-v*` tag, or `workflow_dispatch`, it
+builds `windows-amd64` with the same builder image, Go version, and CGO/SDL
+setup upstream's own Windows job uses, runs `go test ./...`, and assembles
+`w17-mapper-windows-amd64.zip`:
+
+```
+w17-mapper-windows-amd64/
+  elrs-joystick-control.exe
+  configs/
+    w17-ds4.json
+    README.md          (this file)
+  FORK-NOTICE.md
+  LICENSE
+  W17-README.txt        (generated at package time — build ref, quickstart, known issues)
+```
+
+The artifact uploads on every run and, on tag builds, attaches to the GitHub
+release.
+
+**How the ground station consumes it.** Race day does not read this repo's
+docs or run the `Loading` command above by hand — it launches the exe
+directly with exactly one flag, built by a pure whitelist function:
+`mapperArgv` returns `['-config-file-path', <profilePath>]`
+(`w17-ground-station/main/raceDayOrchestrator.js:44,50-71`), and
+`_mapperStep` calls it with the operator's saved profile path
+(`w17-ground-station/main/raceDayOrchestrator.js:268`) before handing the
+result to `MapperRunner.start({ binaryPath, argv })`
+(`w17-ground-station/main/raceDayOrchestrator.js:279`,
+`w17-ground-station/main/mapperRunner.js:99`), which spawns `binaryPath` with
+`cwd: path.dirname(binaryPath)` and an environment scrubbed of the entire
+`W17_*` namespace (`w17-ground-station/main/mapperRunner.js:110,113`). Both
+`Mapper Path` and `Profile Path` are ground-station **settings the operator
+sets once**, and both must be OS-absolute — a relative value is refused
+before launch (`w17-ground-station/main/raceDayOrchestrator.js:60-69`). After
+unzipping this bundle anywhere on the Windows PC, point:
+
+- **Mapper Path** → `...\w17-mapper-windows-amd64\elrs-joystick-control.exe`
+- **Profile Path** → `...\w17-mapper-windows-amd64\configs\w17-ds4.json`
+
+**Known issue, today's truth (`[fix-wave: MAP-1]`).** The exact invocation
+this README's `Loading` section documents, and the one race day performs
+above, currently **panics the process**: `pkg/client/grpc_client.go` wraps
+the file's decoded document in a second `{"config": ...}` envelope before
+calling `SetConfig`, and `configs/w17-ds4.json` already carries that top-level
+wrapper, so the doubled document fails `pkg/config/schema.yaml` validation,
+the server returns `InvalidArgument`, and the client panics
+(`pkg/client/grpc_client.go:57-63`). `pkg/config/w17_profile_test.go:28`
+never catches this because it decodes the file with `json.Unmarshal` directly
+rather than driving it through `client.Init` → `SetConfig`. Not fixed by this
+packaging change — tracked as review finding MAP-1 for a separate fix wave.
+
+**Known issue, today's truth (`[fix-wave: MAP-2]`).** Even once a config
+loads, launching the mapper — by hand or via race day — does not by itself
+start transmitting CRSF frames: `StartLink` only runs when
+`-tx-serial-port-name` is passed (`pkg/client/grpc_client.go:35`), and race
+day's `MAPPER_ARG_WHITELIST` carries only `-config-file-path`
+(`w17-ground-station/main/raceDayOrchestrator.js:44`) — nothing else calls
+`StartLink` for it. "Running" on the race-day card today means "the process
+started", not "frames are on the wire"; verify with a bench check (CRSF
+frames observed on the wire after one button press) before trusting it.
+Tracked as review finding MAP-2 for a separate fix wave.
+
 ## Channel map (firmware truth: control-fw `lib/channels` at `3f4f9b7`)
 
 Every channel uses the CRSF anchors `crsf_min 172 / crsf_max 1811`. The
