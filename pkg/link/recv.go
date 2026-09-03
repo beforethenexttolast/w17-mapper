@@ -73,6 +73,63 @@ func (c *Controller) guardedSend(sendChan chan any, value any) bool {
 	}
 }
 
+// recvLogInterval is the floor between two prints of the SAME recv-loop
+// message. W17 fork addition (review finding N9).
+//
+// What it bounds. MAP-10 made the model-id keepalive live -- its threshold was
+// 2 ms at 921600 baud but the units put it at roughly 33 minutes, so in
+// practice it never fired. Neither print is a flood on the paths that matter:
+// telemetry.Reader.Next BLOCKS in `for count == 0` until bytes arrive, so a
+// merely silent port produces no loop iterations at all, and while telemetry
+// flows lastRecvTelemTime is refreshed immediately before the next tick.
+//
+// The reachable burst is narrow and real: a port whose READS error while its
+// WRITES still succeed. Next then returns immediately, every tick both requests
+// a keepalive and reports a read error, and at a 500 us refresh rate that is up
+// to ~2000 iterations a second, three stdout lines each, into the ground
+// station's 200-line diagnostics ring (w17-ground-station/main/mapperRunner.js)
+// -- which would push every other line out of the operator's view within a
+// fraction of a second. Neither the burst nor the cadence under it has been
+// measured on a bench: [bench-TBD].
+//
+// One second per message keeps the first report immediate, keeps a persistent
+// fault visible, and keeps the ring readable. The suppressed count is carried
+// on the next line so nothing is silently hidden.
+const recvLogInterval = time.Second
+
+// throttledPrint is a per-message rate limiter for the recv loop's two stdout
+// lines. W17 fork addition (review finding N9).
+//
+// It is not safe for concurrent use and does not need to be: both instances
+// live in recvLoop's own frame and are touched only by that goroutine.
+type throttledPrint struct {
+	last       time.Time
+	suppressed int
+}
+
+// due reports whether this message may be printed now, and how many prints of
+// it were suppressed since the last one that was allowed.
+func (t *throttledPrint) due(now time.Time) (bool, int) {
+	if !t.last.IsZero() && now.Sub(t.last) < recvLogInterval {
+		t.suppressed++
+		return false, 0
+	}
+
+	skipped := t.suppressed
+	t.suppressed = 0
+	t.last = now
+
+	return true, skipped
+}
+
+// alsoSuppressed renders the "and N more" tail, or "" when nothing was hidden.
+func alsoSuppressed(skipped int) string {
+	if skipped == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%d more in the last %v)", skipped, recvLogInterval)
+}
+
 func (c *Controller) RecvLoop(port *serial.Port, sendChan chan any, recvChan chan any) error {
 	return c.recvLoop(port.BaudRate, telem.NewReader(port), sendChan, recvChan)
 }
@@ -95,6 +152,11 @@ func (c *Controller) recvLoop(baudRate int32, reader frameReader, sendChan chan 
 
 	var tPacket telem.TelemType
 	var err error
+
+	// W17 fork addition (review finding N9): one rate limiter per message. See
+	// recvLogInterval for the burst these bound.
+	keepaliveLog := throttledPrint{}
+	readErrorLog := throttledPrint{}
 
 	c.recvPacketsCount = 0
 	c.errorPacketsCount = 0
@@ -130,7 +192,10 @@ Loop:
 			timeSinceLastTelem := currentTickTime.Sub(lastRecvTelemTime)
 			timeSinceLastSyncReq := currentTickTime.Sub(lastSyncReqTime)
 			if timeSinceLastTelem > maxInactivityTime && timeSinceLastSyncReq > maxInactivityTime {
-				fmt.Printf("(recv-loop) requesting TelemSync lt:%v, ls:%v\n", timeSinceLastTelem, timeSinceLastSyncReq)
+				if due, skipped := keepaliveLog.due(currentTickTime); due {
+					fmt.Printf("(recv-loop) requesting TelemSync lt:%v, ls:%v%s\n",
+						timeSinceLastTelem, timeSinceLastSyncReq, alsoSuppressed(skipped))
+				}
 				lastSyncReqTime = currentTickTime
 				if !c.guardedSend(sendChan, SendModelId) {
 					break Loop
@@ -143,7 +208,10 @@ Loop:
 					break
 				}
 
-				fmt.Printf("(recv-loop) error reading telemetry data. error: %s\n", err.Error())
+				if due, skipped := readErrorLog.due(time.Now()); due {
+					fmt.Printf("(recv-loop) error reading telemetry data. error: %s%s\n",
+						err.Error(), alsoSuppressed(skipped))
+				}
 				telemErrorCount += 1
 				c.errorPacketsCount += 1
 				break
