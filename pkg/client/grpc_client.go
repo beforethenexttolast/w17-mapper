@@ -98,25 +98,29 @@ func Init(grpcHost, txServerPortName, configFilePath string, txServerPortBaudRat
 	client := pb.NewJoystickControlClient(conn)
 	var res *pb.Empty
 
-	if startLinkRequested {
-		if res, err = client.StartLink(ctx, &pb.StartLinkReq{
-			Port:     txServerPortName,
-			BaudRate: int32(txServerPortBaudRate),
-		}); err != nil {
-			return fmt.Errorf("could not start the radio link on %s: %w", txServerPortName, err)
-		}
-
-		fmt.Printf("%v", res)
-	}
-
+	// W17 fork modification (independent Opus re-verify of this branch,
+	// residual 2: the StartLink-ordering hedge). The saved profile is read and
+	// refused HERE, before StartLink runs, not after it. Both refusals below
+	// used to sit inside the `len(configFilePath) != 0` block that followed
+	// the `startLinkRequested` StartLink call -- so `-tx-serial-port-name`
+	// PLUS `-config-file-path`, against a profile that fails either check,
+	// started the radio before either refusal ran. FORK-NOTICE's "no config
+	// applied, no radio started" was true only of the race-day path (one
+	// flag; the ground station's argv whitelist carries exactly
+	// -config-file-path, never an explicit port), not of every invocation --
+	// and untested in either direction. Reading and refusing the profile up
+	// here, ahead of StartLink, makes that true for every invocation while
+	// leaving the hobbyist path -- an explicit port plus a profile that passes
+	// both checks -- starting the link exactly as before: StartLink still
+	// runs before SetConfig, unchanged.
+	var payload *structpb.Struct
+	var doc map[string]any
 	if len(configFilePath) != 0 {
 		var configJson []byte
 		if configJson, err = os.ReadFile(configFilePath); err != nil {
 			return fmt.Errorf("could not read the saved profile %s: %w", configFilePath, err)
 		}
 
-		var payload *structpb.Struct
-		var doc map[string]any
 		if payload, doc, err = configPayload(configJson); err != nil {
 			return err
 		}
@@ -150,7 +154,20 @@ func Init(grpcHost, txServerPortName, configFilePath string, txServerPortBaudRat
 		if !cc.DeclaresW17Marker(doc) {
 			return errors.New(cc.W17MarkerRefusal(configFilePath))
 		}
+	}
 
+	if startLinkRequested {
+		if res, err = client.StartLink(ctx, &pb.StartLinkReq{
+			Port:     txServerPortName,
+			BaudRate: int32(txServerPortBaudRate),
+		}); err != nil {
+			return fmt.Errorf("could not start the radio link on %s: %w", txServerPortName, err)
+		}
+
+		fmt.Printf("%v", res)
+	}
+
+	if len(configFilePath) != 0 {
 		if res, err = client.SetConfig(ctx, &pb.SetConfigReq{Config: payload}); err != nil {
 			return fmt.Errorf("the saved profile %s was refused: %w", configFilePath, err)
 		}

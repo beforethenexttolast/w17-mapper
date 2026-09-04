@@ -288,6 +288,57 @@ func TestHeadlessBringupRefusesAnUnmarkedProfile(t *testing.T) {
 	}
 }
 
+// TestHeadlessBringupWithAnExplicitPortStillRefusesBeforeStartingTheLink is
+// the StartLink-ordering hedge from the independent Opus re-verify of this
+// branch (residual 2): both refusals above used to sit AFTER the
+// startLinkRequested StartLink call, so `-tx-serial-port-name` PLUS
+// `-config-file-path`, against a profile either refusal would catch, started
+// the radio before the refusal ever ran. Race day never passes an explicit
+// port (the ground station's argv whitelist carries exactly
+// `-config-file-path`), so this was unreachable there -- but "no config
+// applied, no radio started" was a claim about every invocation, and this is
+// the invocation it was never tested against.
+//
+// Both fixtures are covered because the two refusals used to have the same
+// hole: the unfilled shipped profile (MAP-5) and the unmarked filled one
+// (OD-9/D2 addendum) must both refuse with zero StartLink calls even when an
+// explicit port is given.
+func TestHeadlessBringupWithAnExplicitPortStillRefusesBeforeStartingTheLink(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		path func(*testing.T) string
+		want func(path string) string
+	}{
+		{"unmarked profile", unmarkedFilledProfile, cc.W17MarkerRefusal},
+		{"unfilled profile", func(t *testing.T) string {
+			t.Helper()
+			return w17ProfilePath
+		}, func(string) string {
+			return cc.PlaceholderRefusal([]string{"REPLACE-WITH-COM-PORT", "REPLACE-WITH-DS4-ID"})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec, configCtl, port := startMapper(t)
+			path := tc.path(t)
+
+			err := Init(server.DefaultBindHost, "COM9", path, benchBaudRate, port, false)
+			if err == nil {
+				t.Fatal("a refused profile must stay refused with an explicit port given")
+			}
+			if want := tc.want(path); err.Error() != want {
+				t.Errorf("the refusal must be the one plain sentence, verbatim.\n got: %s\nwant: %s",
+					err.Error(), want)
+			}
+			if configCtl.Config != nil {
+				t.Error("a refused profile must not become the live config -- SetConfig ran")
+			}
+			if calls := rec.links(); len(calls) != 0 {
+				t.Errorf("a refused profile must not start the radio, explicit port or not; got StartLink%v", calls)
+			}
+		})
+	}
+}
+
 // TestTheEditorStaysPermissiveForUnmarkedConfigs is the other half of the same
 // ruling: SetConfig -- the web editor's Apply, and the authoritative gate for
 // everything else -- must still accept an unmarked upstream config. If this
