@@ -57,10 +57,21 @@ type fakeReader struct {
 	reads  atomic.Int64
 	frame  func() telem.TelemType
 	failed error
+
+	// notify, when non-nil, receives one blocking send as each call to Next is
+	// about to return. W17 fork addition (branch C): the explicit
+	// synchronisation point the "parked" lifecycle tests use to know a read
+	// has actually happened, instead of polling reads under a real ticker
+	// (see those tests for why the poll was wrong on a Windows runner). Left
+	// nil, Next behaves exactly as before.
+	notify chan struct{}
 }
 
 func (f *fakeReader) Next(*tomb.Tomb) (telem.TelemType, error) {
 	f.reads.Add(1)
+	if f.notify != nil {
+		f.notify <- struct{}{}
+	}
 	if f.failed != nil {
 		return nil, f.failed
 	}
@@ -184,44 +195,139 @@ func stopWithin(t *testing.T, c *Controller, d time.Duration, what string) {
 
 // TestStopReturnsWhileParkedOnATelemetryFrame is the MAP-3 gate for the
 // telemetry-forwarding send (recv.go's TelemSyncType branch).
+//
+// W17 fork modification (branch C, CI run 33840857908 on w17-headtrack
+// ebf89fa): this used to drive the real wall clock and detect "parked" by
+// polling reads.Load() -- sleep 10ms, require the count stopped advancing but
+// had left zero first. On the Windows release runner the production ticker's
+// requested 500 us period is coalesced to the OS's timer granularity (the same
+// run's log shows a keepalive tick landing at lt:15.6665ms), which is already
+// past the 2ms keepalive threshold on the very FIRST tick -- so the loop
+// parked on the KEEPALIVE send (see the test below) before reader.Next ever
+// ran once, reads.Load() never left 0, and "before > 0" never became true. The
+// poll then measured its own 2s deadline, not the property under test.
+//
+// Driving the loop through the injected clock (recvClock) removes the
+// ambiguity outright: a zero-length tick can never cross the threshold (see
+// fakeClock.settle), so the leading tick is guaranteed, on every OS, to reach
+// reader.Next -- and the notify channel is the loop's own synchronous
+// confirmation that it did, not a guess about how long that took.
 func TestStopReturnsWhileParkedOnATelemetryFrame(t *testing.T) {
 	c := newController()
-	reader := &fakeReader{frame: func() telem.TelemType { return syncFrame() }}
+	notify := make(chan struct{})
+	reader := &fakeReader{frame: func() telem.TelemType { return syncFrame() }, notify: notify}
 
 	// Unbuffered and unread: the send loop is dead.
-	startRecv(t, c, reader, make(chan any))
+	sendChan := make(chan any)
+	clk := newFakeClock()
+	// startRecvClocked's leading settle tick is zero-length by construction,
+	// so it cannot itself cross the keepalive threshold: this first tick is
+	// guaranteed to reach reader.Next, not the keepalive send.
+	startRecvClocked(t, c, reader, clk, sendChan)
 
-	// Same park, on the other send: reads stop advancing once the loop is
-	// handing a sync frame to a send loop that will never take it.
-	waitFor(t, func() bool {
-		before := reader.reads.Load()
-		time.Sleep(10 * time.Millisecond)
-		return before > 0 && reader.reads.Load() == before
-	}, "the recv loop to park handing over a telemetry frame")
+	// Wait for that read to actually happen -- a synchronisation point, not a
+	// timing guess. Next only returns once this send is received, so by the
+	// time it is, the loop has the frame in hand and is headed straight for
+	// the guardedSend below (Broadcast never blocks: see telem_broadcast.go,
+	// and newController subscribes no listeners).
+	select {
+	case <-notify:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the recv loop never called Next after its leading tick")
+	}
 
+	// The loop can only reach `ticks` again after that guardedSend returns,
+	// and the only way it returns before Stop is a bug: the send loop is dead
+	// and unbuffered. So StopRecvLoop returning bounded IS the assertion that
+	// the fix (guardedSend's own Dying() case) is what unblocks it -- MAP-3 in
+	// FORK-NOTICE.md.
 	stopWithin(t, c, 2*time.Second, "parked handing a sync frame to the send loop")
+
+	// The loop has now fully exited (stopWithin's Wait() guarantees it), so
+	// reading reads is race-free: exactly the one frame handed to the dead
+	// send loop, never a second.
+	if got := reader.reads.Load(); got != 1 {
+		t.Errorf("reads = %d, want exactly 1 -- the loop should have parked "+
+			"handing over the first frame, not read again", got)
+	}
 }
 
 // TestStopReturnsWhileParkedOnTheKeepalive is the MAP-3 gate for the other
 // send, the model-id keepalive -- the one that only became reachable once
 // MAP-10's unit bug was fixed.
+//
+// W17 fork modification (branch C): the same Windows failure as the test
+// above, sharper. There, the loop still managed one read before parking; here
+// the keepalive check runs BEFORE reader.Next each tick, so a first tick that
+// already exceeds the 2ms threshold -- guaranteed on a runner whose ticker
+// cannot resolve finer than the OS timer grain -- parks the loop with
+// reads.Load() stuck at 0 FOREVER, not merely unchanging: the poll's
+// "before > 0" half can never fire, and the test times out regardless of how
+// long it waits (the CI log shows exactly this: no read-error line at all
+// before the fail). Driving the clock explicitly reproduces that same shape
+// ON PURPOSE -- advance past the threshold before any read has happened --
+// and proves the fix deterministically instead of hoping the real ticker's
+// first delivery lands one way or the other.
 func TestStopReturnsWhileParkedOnTheKeepalive(t *testing.T) {
 	c := newController()
-	// Every read fails, so no frame ever refreshes lastRecvTelemTime and the
-	// keepalive threshold is crossed within a few ticks.
+	// Every read fails, so no frame ever refreshes lastRecvTelemTime.
 	reader := &fakeReader{failed: errTestRead{}}
 
-	startRecv(t, c, reader, make(chan any))
+	// Unbuffered and unread: the send loop is dead.
+	sendChan := make(chan any)
+	clk := newFakeClock()
+	maxInactivityTime := crossfire.GetRefreshRate(testBaudRate) * 4
 
-	// The loop parks on the keepalive send, so its read count STOPS advancing.
-	// 10 ms is 20 refresh periods: a loop still running would have read again.
-	waitFor(t, func() bool {
-		before := reader.reads.Load()
-		time.Sleep(10 * time.Millisecond)
-		return before > 0 && reader.reads.Load() == before
-	}, "the recv loop to park on the model-id keepalive")
+	// The leading settle tick is zero-length (fakeClock.settle), so it cannot
+	// cross the threshold: it takes the ordinary read path once (the read
+	// fails, logged and counted, the loop returns to the top). The advance
+	// below is what forces the keepalive branch, deterministically, from a
+	// standing start where lastRecvTelemTime and lastSyncReqTime are both
+	// still the loop's initial timestamp.
+	startRecvClocked(t, c, reader, clk, sendChan)
+	clk.tick(t, maxInactivityTime+maxInactivityTime/2)
 
+	// clk.tick only confirms the loop TOOK this tick off the channel -- i.e.
+	// it is now past the outer select, committed to this iteration's body,
+	// which (both timestamps stale) can only reach the keepalive guardedSend
+	// next. StopRecvLoop returning bounded from there is the MAP-3 assertion.
 	stopWithin(t, c, 2*time.Second, "parked on the model-id keepalive")
+
+	// The loop has fully exited by now, so this is race-free: exactly the one
+	// read from the settle tick, and no second -- the very next tick parked
+	// on the keepalive send before reader.Next ran again.
+	if got := reader.reads.Load(); got != 1 {
+		t.Errorf("reads = %d, want exactly 1 -- the loop should have parked "+
+			"on the keepalive before reading again", got)
+	}
+}
+
+// TestStopReturnsWhileParkedOnTheKeepaliveUnderAWindowsGranularityTick proves
+// the fix above does not merely dodge the Windows failure by choosing a small,
+// precise clock step: it re-runs the identical scenario advancing the clock by
+// the exact granularity the CI log measured (run 33840857908 on w17-headtrack
+// ebf89fa: "requesting TelemSync lt:15.6665ms, ls:15.6665ms") rather than
+// maxInactivityTime*1.5. See TestStopReturnsWhileParkedOnTheKeepalive.
+func TestStopReturnsWhileParkedOnTheKeepaliveUnderAWindowsGranularityTick(t *testing.T) {
+	c := newController()
+	reader := &fakeReader{failed: errTestRead{}}
+
+	sendChan := make(chan any)
+	clk := newFakeClock()
+
+	startRecvClocked(t, c, reader, clk, sendChan)
+
+	// The exact tick size the failing CI run's log recorded -- far above the
+	// 2ms threshold at this baud rate, so the same keepalive-park proof holds
+	// however coarse the runner's timer turns out to be.
+	const windowsGranularTick = 15666500 * time.Nanosecond // 15.6665 ms
+	clk.tick(t, windowsGranularTick)
+
+	stopWithin(t, c, 2*time.Second, "parked on the model-id keepalive under a Windows-scale tick")
+
+	if got := reader.reads.Load(); got != 1 {
+		t.Errorf("reads = %d, want exactly 1", got)
+	}
 }
 
 // TestKeepaliveFiresAfterFourRefreshPeriods is the MAP-10 gate. With the unit
@@ -358,16 +464,3 @@ func TestSendChanIsBuffered(t *testing.T) {
 type errTestRead struct{}
 
 func (errTestRead) Error() string { return "test: no telemetry" }
-
-func waitFor(t *testing.T, cond func() bool, what string) {
-	t.Helper()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
-}
