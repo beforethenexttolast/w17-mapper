@@ -228,10 +228,30 @@ Loop:
 				//no-op
 			}
 
-		case <-ticks:
+		case currentTickTime = <-ticks:
 			tickCount += 1
-			currentTickTime = clock.Now()
 
+			// W17 fork modification (branch C): use the instant the tick itself
+			// carries rather than a fresh clock.Now() call made just after
+			// receiving it. Under the real wallClock the two are a scheduling
+			// hair apart and it never mattered; under the injected fakeClock
+			// (recvClock, branch B) it does -- Ticks() and Now() read the same
+			// mutex-guarded field, and nothing serialises "the loop has taken
+			// this tick" with "the loop has read Now() for it". A test driving
+			// the clock in a tight sequence of tick() calls (see
+			// recv_lifecycle_test.go) can advance the clock for the NEXT tick
+			// in the gap between those two lines, so this iteration's own
+			// "now" could already reflect a later tick -- observed as
+			// TestStopReturnsWhileParkedOnTheKeepalive intermittently reading
+			// its zero-length leading settle tick as if 3ms had already
+			// elapsed, firing the keepalive a tick early and then hanging the
+			// test's next tick() send against a loop that had already parked.
+			// Every recvClock implementation's Ticks() already carries the
+			// exact instant a tick fired -- wallClock's ticker and fakeClock's
+			// tick() both set it at the moment of send -- so using it directly
+			// removes the second, racy read instead of adding synchronisation
+			// to close the gap.
+			//
 			// W17 fork modification (MAP-10): compare like with like. Both
 			// elapsed times used to be divided by time.Millisecond before being
 			// compared against maxInactivityTime, which is a Duration in
