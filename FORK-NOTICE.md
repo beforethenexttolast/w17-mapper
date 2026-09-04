@@ -82,6 +82,7 @@ All changes are dated and attributable in git history. Summary:
 | `3dcc0af` | 2026-09-04 | **The headless bring-up refuses an unmarked profile (owner ruling OD-9/D2 addendum, 2026-09-04).** Rewording stops the refusal SUGGESTING the marker edit; it cannot stop the edit working. `LintW17ArmChain` is silent on an unmarked config by design — this fork still has to load other people's rigs — so deleting the marker from the car's own filled profile left every arm-chain rule quiet on the only copy that matters. `-config-file-path` is the race-day path (the ground station's argv whitelist carries exactly that one flag), so `client.Init` now refuses a profile that does not declare `"w17_profile": true` inside its `config` object, with one plain sentence, BEFORE `SetConfig`: no config applied, no radio started. Only the JSON literal `true` counts. The editor's `SetConfig` stays permissive, per the ruling, with a test that says so. **Cost, stated:** this binary no longer starts an UPSTREAM rig from the command line; those configs load in the web editor, which the refusal names. `TestSelfStartLinkWithoutATransmitterStartsNothing` keeps the "no transmitter is not an error" coverage the repurposed `Init` test carried |
 | `6012770` | 2026-09-04 | **Documentation truth (independent review, non-blocking 4/5/6, plus the docs half of `3dcc0af`).** `configs/README.md`: the bring-up order gains the unmarked-profile refusal as step 3, and "keep the marker" now says it is enforced rather than requested; the worked `-list-devices` sample printed `"id": "a1b2c3"` beside a REAL GUID and name in a section that invites checking the derivation by hand — it is `1f54d3` for that pair, and the text now shows the check; and the bold booklet-bound imperative "**Reconnect it. The mapper picks it up again**" carries its `[bench-TBD]` caveat in the same sentence instead of 24 lines below. `pkg/devices/hotplug.go`: the collision comment claimed "the FIRST holder of an id keeps it", which is stronger than what holds — with two IDENTICAL pads the bare id can rebind to the other physical pad after a hot-plug; out of scope for the single-pad W17 rig, and now stated as a limit |
 | `24cb50c` | 2026-09-04 | **Flag help (follow-on to `3dcc0af`).** `-config-file-path` read "config json file path", so its new refusal would have been the first place anyone learned the requirement. It says it, and names the web editor as where an unmarked config belongs. **This row and the four row-adding commits that follow it are folded together** (the `b263057`/`68fc3c4` convention). Those commits also carry the corrected `b673890` and `50878c8` rows above, and the rewritten hook section, which now states what check 3 does rather than "any departure from the enum's exact shape", carries the A1–A13 matrix, and lists what the check deliberately leaves out. Check 4's false-positive surface re-measured at `24cb50c`, the last commit on this branch that changes a file in scope (155 .go, 2 .proto, 2 .sh, 9 .yaml, no vendor/): ZERO hits — tree-wide only `.githooks/pre-push` and this file match, and neither is in scope |
+| `02cd5f0` | 2026-09-04 | **Check 3 reads the enum header line's own tail (independent Opus re-verify of this branch, blocking residual 1).** The block-opening match on `enum HeadIntentState {` set `inside = 1` and moved to the next line without ever reading what followed the `{` on that SAME line — not skipped as unparseable, simply never looked at, so a value declared there was never counted toward "exactly nine values" and never reached the name test. Re-verify demonstrated this four ways, all reproduced ALLOWED before the fix in a scratch clone with the remote removed: a bare value on the header line (N1); the same wrapped in ordinary valid proto3 — `UNSPECIFIED = 0` repeated under `allow_alias`, then `ACTIVE_OUTPUT = 9` (N1b); `ACTIVE_OUTPUT` aliased onto the *existing* value 8 via `allow_alias`, so the value count never moves and only a hidden second name at 8 does (N1c, the sneakiest of the four); and two extra values, 9 and 10, both on the header line (N1d). The header line is now read, not just matched: a trailing `//` comment and everything up to and including the `{` are stripped, and anything non-blank left is the same *unparseable declaration* refusal the body uses. HONEST LIMITS previously named the mechanism ("ignores whatever follows the `{`") but called the consequence a false REFUSAL — it is the opposite, a false **accept** admitting a state above `ACTIVE_LOG_ONLY = 8`, the same defect class as the blocker (`c399393`) that made this check fail-closed in the first place. This row and the hook-section rewrite below (the "what check 3 does" bullets, HONEST LIMITS, and the N1–N1d matrix rows above) are the same fix; the code lives in `02cd5f0`, the doc corrections in this row-adding commit |
 
 
 ## Safety boundary — read before pushing
@@ -148,6 +149,10 @@ code):
   `enum<whitespace>HeadIntentState` — two matching files, including a file that
   only names it in a comment, is a refusal;
 - that file may open the block **once**;
+- the header line itself is read, not just matched: after a trailing `//`
+  comment and everything up to and including the `{` are stripped, anything
+  non-blank left on that line is refused the same way — a value cannot ride
+  on the header line any more than on a value line's tail;
 - inside the block, after `//` comments are stripped, **every** non-blank line
   that is not the closing `}` must carry **exactly one `;`, at its end** —
   `option …` and `reserved …` statements included, so nothing can ride on
@@ -168,10 +173,14 @@ proto parser: it does not follow `import`, cannot see an enum a generator builds
 and reads only the tip tree. It skips `option`/`reserved` lines by name (neither
 declares a value; `option allow_alias = true` opens nothing, because two names
 sharing a number is already a duplicate refusal). It requires one statement per
-line and ignores whatever follows the `{` on the header line, so a legal `.proto`
-written on one line is refused rather than read — a false refusal, and the
-intended direction. And it checks the enum's SHAPE: a ninth state under a
-neutral name is caught by the count rather than by its name, while a state
+line, so a legal `.proto` written on one line is refused rather than read — a
+false refusal, and the intended direction. (The header line used to be the one
+exception to that rule: content after its `{` was matched but never read, which
+was not a false refusal but a false **accept** — a value could ride on the
+header line and never be counted. Closed 2026-09-04, independent re-verify of
+this branch; see the N1–N1d rows below.) And it checks the enum's SHAPE: a
+ninth state under a neutral name is caught by the count rather than by its
+name, while a state
 *renamed* without renumbering is a semantic change no shape check sees.
 `pkg/server/headintent_enum_test.go` asserts the same contract against the
 **generated Go**, on every `go test`, hook or no hook.
@@ -230,6 +239,21 @@ after** it.
 | tabs around the `=` and the value (A11) | refused — read, then the name rule caught it |
 | `… = 9; }` closing the block on a value line (A12) | refused — one statement per line |
 | `… = 8; } enum HeadIntentState { … = 9;` on one line (A13) | refused — same rule, which is why the rule exists |
+
+**Check 3 re-verified again 2026-09-04** (independent Opus re-verify of this
+branch, blocking residual 1): the enum's own **header line** —
+`enum HeadIntentState {` — was matched to open the block but never read past
+the `{`, so a value could ride on that line and never be counted or
+name-tested. Same method, scratch clone, ref line on stdin, nothing pushed;
+each row confirmed **allowed before** this fix and **refused after** it.
+
+| Case | Result |
+|---|---|
+| `enum HeadIntentState { HEAD_INTENT_STATE_ACTIVE_OUTPUT = 9;` — a value bare on the header line (N1) | refused — *unparseable declaration on the HeadIntentState enum header line*. **Was allowed**: the body still read as a clean 0..8 |
+| same, wrapped in ordinary valid proto3 — `UNSPECIFIED = 0` repeated under `allow_alias`, then `ACTIVE_OUTPUT = 9`, all on the header line (N1b) | refused — same reason. **Was allowed**: not obfuscation, just text this check never read |
+| `ACTIVE_OUTPUT` aliased onto the **existing** value 8 via `allow_alias`, on the header line (N1c) | refused. **Was allowed** — the sneakiest of the four: the value count never moves, only a hidden second name at 8 does |
+| two extra values, 9 and 10, both on the header line (N1d) | refused. **Was allowed** |
+| a header line carrying only a trailing `// comment`, no value | **allowed** — comments are stripped before the blank check, same rule the body uses |
 
 The earlier matrix was re-run unchanged at the same tip (I3/I6/I7/I8/I9 refused,
 I10 allowed, clean tip allowed), and the real `u4-arbiter` tip
