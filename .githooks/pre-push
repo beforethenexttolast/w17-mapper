@@ -15,14 +15,18 @@
 #   2. A `FIRST_ACTIVE` identifier in Go or proto source.
 #   3. The head-intent enum, asserted POSITIVELY and FAIL-CLOSED. Precisely:
 #      exactly ONE .proto in the pushed tree may match `enum<space>HeadIntentState`
-#      (spaces or tabs), and that file may open the block only once. Inside the
-#      block, after `//` comments are stripped, EVERY non-blank line that is not
-#      the closing `}` must carry exactly one `;`, at its end -- `option ...`
-#      and `reserved ...` statements included -- so nothing can ride on another
-#      statement's tail; and every such line that is not `option ...` or
-#      `reserved ...` must also read NAME = <decimal> followed by `;` or `[`.
-#      A line failing either rule is REFUSED as an unparseable declaration,
-#      never skipped.
+#      (spaces or tabs), and that file may open the block only once. The header
+#      line itself is read, not just matched: after a trailing `//` comment and
+#      everything up to and including the `{` are stripped, anything non-blank
+#      left on that line is REFUSED the same way a bad line inside the block is
+#      -- a value cannot ride on the header line any more than on a value
+#      line's tail. Inside the block, after `//` comments are stripped, EVERY
+#      non-blank line that is not the closing `}` must carry exactly one `;`,
+#      at its end -- `option ...` and `reserved ...` statements included -- so
+#      nothing can ride on another statement's tail; and every such line that
+#      is not `option ...` or `reserved ...` must also read NAME = <decimal>
+#      followed by `;` or `[`. A line failing either rule -- the header line
+#      included -- is REFUSED as an unparseable declaration, never skipped.
 #      The values so read must be exactly 0..8, each declared once,
 #      value 8 named HEAD_INTENT_STATE_ACTIVE_LOG_ONLY, and no other name may
 #      carry ACTIVE as an underscore-separated token, compared
@@ -64,11 +68,14 @@
 #   * Check 3 skips `option ...` and `reserved ...` lines inside the block BY
 #     NAME, because neither declares a value. `option allow_alias = true` opens
 #     no hole: two names sharing one number is already refused as a duplicate.
-#   * Check 3 requires ONE statement per line, ending in its semicolon, and it
-#     ignores whatever follows the `{` on the enum's own header line. proto3
+#   * Check 3 requires ONE statement per line, ending in its semicolon. proto3
 #     does not care about newlines, so a legal file written on one line is
 #     REFUSED here rather than read. That is a false refusal, and the intended
-#     direction: reformat the .proto rather than widen this.
+#     direction: reformat the .proto rather than widen this. (The header line
+#     used to be the one exception -- content after its `{` was matched but
+#     never read, which was not a false refusal but a false ACCEPT: a value
+#     could ride on the header line and never be counted. Closed 2026-09-04,
+#     independent re-verify of this branch; see N1-N1d in the matrix below.)
 #   * Check 3 requires exactly one .proto to match, so a SECOND .proto that
 #     merely names `enum HeadIntentState` — in a comment, say — is refused
 #     rather than tolerated. Deliberate: a clean decoy file beside a tampered
@@ -147,6 +154,33 @@
 #       otherwise well-formed value line             line, ending in its `;`)
 #   A13 `... = 8; } enum HeadIntentState { ...`   -> REFUSED (same rule; this
 #       all on one line                              is why that rule exists)
+# Independent RE-VERIFY of this branch, 2026-09-04 (blocking residual 1): the
+# enum's own HEADER line -- `enum HeadIntentState {` -- was matched to open the
+# block but never read past the `{`, so a value could ride on that line and
+# never be counted or name-tested. Same method, scratch clone, ref line on
+# stdin, nothing pushed; each row confirmed ALLOWED before this fix and
+# REFUSED after:
+#   N1  a value on the header line itself:        -> REFUSED (unparseable
+#       `enum HeadIntentState { ACTIVE_OUTPUT = 9;`  declaration on the header
+#                                                    line). Was ALLOWED: the
+#                                                    body still read as a
+#                                                    clean 0..8.
+#   N1b same, ordinary valid proto3 (UNSPECIFIED   -> REFUSED (same reason).
+#       repeated with allow_alias, then             Was ALLOWED -- this shape
+#       ACTIVE_OUTPUT = 9) on the header line        is not obfuscation, just
+#                                                    text this check never read.
+#   N1c same, ACTIVE_OUTPUT aliased onto the       -> REFUSED. Was ALLOWED --
+#       EXISTING value 8 via allow_alias on the      the sneakiest of the four:
+#       header line                                  the value count never
+#                                                    changed, only a hidden
+#                                                    second name at 8 did.
+#   N1d two extra values (9 and 10) on the header  -> REFUSED. Was ALLOWED.
+#       line
+# A header line carrying only a trailing `// comment` (no value) stays
+# ALLOWED -- comments are stripped before the blank check, same as inside the
+# block. Fix: the header match now strips a trailing `//` comment and
+# everything up to and including the `{`, and refuses if anything non-blank
+# remains, with the same "unparseable declaration" wording the body uses.
 # False-positive surface of check 4, measured over the in-scope globs at
 # 9ba6e06 (120 .go, 2 .proto, 2 .sh, 8 .yaml, no vendor/): ZERO hits. The .sh
 # count was published as 3 and was wrong (review finding MAP-16): that tree
@@ -212,6 +246,18 @@ assert_head_intent_enum() {
 		/^[[:space:]]*enum[[:space:]]+HeadIntentState[[:space:]]*\{/ {
 			blocks++
 			if (blocks > 1) { fail("this file opens the HeadIntentState enum block more than once") }
+			# The header line itself can carry a value after the `{` -- proto3
+			# does not care that the block "just opened" -- so it is read too,
+			# not just matched. Strip a trailing `//` comment, then strip
+			# everything up to and including the `{`; anything non-blank left
+			# is the same refusal, not a skip. Independent re-verify (N1/N1b/
+			# N1c/N1d) found this line ALLOWED with a ninth value riding on it.
+			header_tail = $0
+			sub(/\/\/.*$/, "", header_tail)
+			sub(/^[^{]*\{/, "", header_tail)
+			if (header_tail !~ /^[[:space:]]*$/) {
+				fail("unparseable declaration on the HeadIntentState enum header line:" header_tail)
+			}
 			inside = 1
 			next
 		}
