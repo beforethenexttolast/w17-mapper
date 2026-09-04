@@ -73,6 +73,19 @@ func TestAlsoSuppressedIsSilentWhenNothingWasHidden(t *testing.T) {
 // TestReadErrorsAreCountedEvenWhenNotPrinted is the over-correction guard, and
 // the one that matters for diagnostics: the rate limit governs STDOUT only. The
 // error counters the RPC surface reports must still see every failure.
+//
+// W17 fork modification (branch C, CI run 33840857908 on w17-headtrack
+// ebf89fa): this used to drive the real wall clock for 50ms and require "at
+// least 10" reads happened in that window -- sized for a 500 us refresh, which
+// assumes on the order of 100 ticks. On the Windows release runner the
+// production ticker cannot resolve finer than the OS timer grain, so 50ms
+// produced only 6, under the floor the test itself called "too few to
+// conclude anything" -- a real failure, but of the wall-clock measurement, not
+// of the counters under test. Driving a fixed number of ticks through the
+// injected clock makes the read count exact instead of a guess; stepping by
+// 16ms -- the granularity the CI log's own keepalive line measured
+// (lt:15.6665ms) -- proves the counters survive that coarseness rather than
+// merely avoiding it.
 func TestReadErrorsAreCountedEvenWhenNotPrinted(t *testing.T) {
 	c := newController()
 	reader := &fakeReader{failed: errTestRead{}}
@@ -85,18 +98,37 @@ func TestReadErrorsAreCountedEvenWhenNotPrinted(t *testing.T) {
 		}
 	}()
 
-	startRecv(t, c, reader, sendChan)
-	time.Sleep(50 * time.Millisecond)
+	const wantReads = 20
+	const coarseTick = 16 * time.Millisecond
+
+	clk := newFakeClock()
+	startRecvClocked(t, c, reader, clk, sendChan) // read #1, via the leading settle tick
+
+	// wantReads-2 more real ticks (reads #2..#wantReads-1), then a trailing
+	// zero-length settle tick for the last one. The settle is not decoration:
+	// it is what proves the PREVIOUS tick's keepalive guardedSend has already
+	// taken its sendChan branch before this test kills the tomb below --
+	// without it, StopRecvLoop's Kill() can race that same select, and Go may
+	// pick the now-ready Dying() case over the equally-ready buffered send,
+	// which skips reader.Next for that last tick entirely (observed: an
+	// intermittent 19 of 20 under `go test -race -count=20`). This is the
+	// same race TestKeepaliveFiresWhenTheClockShowsSilence's own trailing
+	// settle exists to close.
+	for i := 0; i < wantReads-2; i++ {
+		clk.tick(t, coarseTick)
+	}
+	clk.settle(t)
 
 	if err := c.StopRecvLoop(); err != nil {
 		t.Fatalf("StopRecvLoop: %v", err)
 	}
 
-	if reader.reads.Load() < 10 {
-		t.Fatalf("setup: only %d reads, too few to conclude anything", reader.reads.Load())
+	if got := reader.reads.Load(); got != wantReads {
+		t.Fatalf("setup: got %d reads, want exactly %d -- the fixed tick count "+
+			"should make this exact regardless of platform", got, wantReads)
 	}
-	if c.errorPacketsCount < 10 {
+	if got := c.errorPacketsCount; got != wantReads {
 		t.Errorf("errorPacketsCount = %d after %d failing reads -- the rate limit must "+
-			"govern printing, not counting", c.errorPacketsCount, reader.reads.Load())
+			"govern printing, not counting", got, wantReads)
 	}
 }
