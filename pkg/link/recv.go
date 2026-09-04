@@ -283,6 +283,10 @@ Loop:
 					break
 				}
 
+				// This limiter deliberately reads clock.Now() rather than currentTickTime: a
+				// read error is logged from the iteration's own wall-clock moment, while the
+				// keepalive limiter above keys off the tick instant that decided the keepalive.
+				// Only stdout throttling depends on either; no counter or send does.
 				if due, skipped := readErrorLog.due(clock.Now()); due {
 					fmt.Printf("(recv-loop) error reading telemetry data. error: %s%s\n",
 						err.Error(), alsoSuppressed(skipped))
