@@ -253,6 +253,14 @@ func TestTheRefusalSaysWhatToDoAboutIt(t *testing.T) {
 // The rule this pins: the refusal may say the marker belongs only on the W17
 // profile, but no sentence in it may read as an instruction to remove, delete
 // or drop the marker from the file being refused.
+//
+// NOT a semantic guarantee (independent Opus re-verify of this branch,
+// non-blocking residual 4): the check below is a keyword list -- five verbs
+// (remove/delete/drop/take out/strip) times three ways to name the marker --
+// so a reworded bypass suggestion outside that vocabulary ("erase the
+// marker", "comment out the w17_profile line", "just take that line off")
+// would pass it. It catches the exact wording review demonstrated working;
+// it does not catch every way of saying the same thing.
 func TestTheRefusalNeverOffersDeletingTheMarker(t *testing.T) {
 	findings := armFindings(t, markedConfig(armChannel(func(_ *InputAnd, seq *InputSeq) {
 		seq.Seq.ResetOnNaN = false
